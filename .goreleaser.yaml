@@ -1,0 +1,70 @@
+# GoReleaser config. Cuts cross-platform binaries + checksums to GitHub Releases on a
+# tag push (see .github/workflows/release.yml). Docs: https://goreleaser.com
+version: 2
+
+project_name: zentoris
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: zentoris
+    main: ./cmd/zentoris
+    binary: zentoris
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/zentoris-labs/ztr-cli/internal/commands.version={{ .Version }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    # Windows users expect a zip.
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# An SBOM (CycloneDX via syft) per release archive, for downstream vulnerability scanning.
+sboms:
+  - artifacts: archive
+
+# Keyless cosign signature over the checksums file (Sigstore/Fulcio via GitHub OIDC - no private
+# key to store). Verify with:
+#   cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig \
+#     --certificate-identity-regexp 'https://github.com/zentoris-labs/ztr-cli' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto

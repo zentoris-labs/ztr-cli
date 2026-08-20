@@ -1,0 +1,17 @@
+# Built binaries (produced by `go build -o zentoris ./cmd/zentoris`)
+/zentoris
+/ztr
+
+# GoReleaser output
+/dist/
+
+# Test and coverage artifacts
+*.out
+coverage.*
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+
+# Shared VS Code config (.vscode/, *.code-workspace) IS committed - see below.
