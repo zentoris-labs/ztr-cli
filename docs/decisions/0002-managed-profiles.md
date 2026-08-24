@@ -29,17 +29,22 @@ itself and rejected precisely because the label is user-chosen, not the account.
 - **Active profile is persisted** in `~/.zentoris/config.json` alongside an index of known profiles.
   OS keychains are not enumerable, so the CLI tracks known profiles itself (the same reason `gh`
   keeps a hosts file). The file holds only names and the active pointer - never tokens.
-- **Resolution order for the profile is** `--profile` > `ZENTORIS_PROFILE` > the persisted active
-  profile > `default`. The flag layer resolves this after parsing; `internal/config` only reads the
-  env var, because the persisted active profile lives in `internal/auth`, which `config` must not
-  import.
+- **One resolution rule for every command** (login included): `--profile` > `ZENTORIS_PROFILE` > the
+  active profile. The active profile is always a concrete value (`ActiveProfile()` returns `default`
+  when none has been switched to), so there is no separate "unset -> default" fallback. The flag
+  layer resolves this after parsing; `internal/config` only reads the env var, because the persisted
+  active profile lives in `internal/auth`, which `config` must not import.
 - **`auth switch <profile>`** sets the active profile; it refuses a profile that has no stored
   credentials, so you cannot switch to one you have not logged into.
 - **`auth list`** enumerates known profiles (index unioned with any credential files on disk),
   marking the active one and showing each profile's storage backend, account identity, and whether
   its session has expired.
-- **A fresh `auth login` becomes the active profile**, and `auth logout` removes the profile from
-  the index (clearing active if it pointed there).
+- **`auth login` is passive**: it signs into the resolved profile (the same `--profile` >
+  `ZENTORIS_PROFILE` > active rule above) and registers it, but does **not** change which profile is
+  active - so a login never silently hijacks the current one. A bare `auth login` therefore re-logs
+  whatever profile you are currently on. Activation is a deliberate act: `auth switch`, or
+  `auth login --activate` to do both at once. `auth logout` removes the profile from the index
+  (clearing active if it pointed there).
 - **Account identity is captured best-effort** at login by reading the `email` /
   `preferred_username` / `sub` claim from the access token when it is a JWT; opaque tokens simply
   leave the profile unlabeled rather than failing. `auth status` displays it.

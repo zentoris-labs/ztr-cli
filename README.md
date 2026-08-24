@@ -72,17 +72,20 @@ CLI's profiles), not a fixed account id. Sign in under different profile names t
 logins side by side, then choose which one runs a command:
 
 ```bash
-zentoris --profile work auth login          # sign in and cache the "work" profile
-zentoris --profile personal auth login      # a second, independent login (now the active one)
-zentoris auth list                           # show all profiles; "*" marks the active default
-zentoris auth switch work                    # make "work" the active default
-zentoris service list                        # runs as the active profile ("work")
-zentoris --profile personal service list     # override for just this command
+zentoris --profile work auth login                 # sign in; STORES the "work" login (does not switch to it)
+zentoris auth switch work                           # make "work" the active profile
+zentoris service list                               # runs as the active profile ("work")
+zentoris --profile personal auth login --activate   # sign in as "personal" and switch, in one step
+zentoris auth list                                  # show all profiles; "*" marks the active one
+zentoris --profile work service list                # override for just this command
 ```
 
-The **active** profile is used when you pass neither `--profile` nor `ZENTORIS_PROFILE`. A fresh
-`auth login` becomes active; `auth switch <profile>` changes it (the target must already be logged
-in). Resolution order is `--profile` > `ZENTORIS_PROFILE` > the active profile > `default`.
+Everything - `auth login`, run commands, `auth logout` - resolves the profile the same way:
+**`--profile` > `ZENTORIS_PROFILE` > the active profile**, and the active profile is always set,
+starting as `default`. `auth login` is **passive**: it signs into that resolved profile but does
+**not** change which one is active - so a bare `auth login` re-logs whichever profile you are
+currently on, and `--profile X auth login` stores `X` without switching to it. Activation is a
+deliberate step: `auth switch <profile>` (or `auth login --activate` to do both at once).
 
 Each profile's credentials live under their own keychain entry / file, so
 `zentoris --profile work auth logout` drops only that profile. `auth status` shows the active
@@ -127,7 +130,7 @@ use it against a real deployment.
 ```
 zentoris
   auth
-    login [--use-device-code]  sign in: loopback (default) or RFC 8628 device flow
+    login [--use-device-code] [--activate]   sign in (loopback or device flow); --activate also switches to it
     logout                drop stored credentials for the current profile
     status                show the active profile, credential source, and where it is stored
     list                  list logged-in profiles; "*" marks the active one
