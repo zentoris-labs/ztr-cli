@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -49,14 +50,20 @@ func NewRootCmd() *cobra.Command {
 	var resolveErr error
 	cobra.OnInitialize(func() {
 		resolveErr = cfg.ApplyDomain(f.Changed("insecure"))
-		// Resolve the active profile when the caller pinned neither --profile nor ZENTORIS_PROFILE:
-		// fall back to the profile last selected by `auth switch`, else "default".
-		if !f.Changed("profile") && os.Getenv("ZENTORIS_PROFILE") == "" {
-			if active := auth.ActiveProfile(); active != "" {
-				cfg.Profile = active
-			} else {
-				cfg.Profile = "default"
+		cfg.ProfileFromFlag = f.Changed("profile")
+		// One resolution rule for every command (login included): --profile > ZENTORIS_PROFILE >
+		// active profile. The active profile is always concrete ("default" until `auth switch`), so
+		// there is no separate fallback here.
+		if resolveErr == nil && !cfg.ProfileFromFlag && os.Getenv("ZENTORIS_PROFILE") == "" {
+			active, err := auth.ActiveProfile()
+			if err != nil {
+				// A corrupt/unreadable state file must not silently make every command run as the
+				// default profile - warn, then proceed on "default" so `auth login`/`auth switch`
+				// can still rewrite the state and recover.
+				fmt.Fprintf(root.ErrOrStderr(), "warning: could not read the active profile (%v); using \"default\".\n", err)
+				active = "default"
 			}
+			cfg.Profile = active
 		}
 	})
 	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {

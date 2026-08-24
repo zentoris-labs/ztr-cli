@@ -99,10 +99,10 @@ func tokenNeedsRefresh(c *Credentials) bool {
 const loginCallbackTimeout = 3 * time.Minute
 
 // RunInteractiveLogin performs a browser loopback-PKCE sign-in against the Zentoris OP and
-// caches the resulting tokens for the active profile. The OP accepts RFC 8252 public clients
+// caches the resulting tokens for the target profile (see persistLogin). The OP accepts RFC 8252 public clients
 // (PKCE S256, loopback-any-port), so this needs no client secret and no backend change - it
 // does require the fixed first-party `cli` client (see clientID) provisioned in the tenant.
-func RunInteractiveLogin(ctx context.Context, cfg *config.Config) error {
+func RunInteractiveLogin(ctx context.Context, cfg *config.Config, activate bool) error {
 	verifier, challenge, err := newPKCE()
 	if err != nil {
 		return err
@@ -139,7 +139,7 @@ func RunInteractiveLogin(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return persistLogin(cfg, creds)
+	return persistLogin(cfg, activate, creds)
 }
 
 // oidcConfig is the subset of the OIDC discovery document zentoris needs.
@@ -399,7 +399,7 @@ type deviceAuthorization struct {
 // server, so it works over SSH / in containers / on headless boxes. The CLI prints a code + URL,
 // the user approves in any browser (the account app's /device page), and the CLI polls the token
 // endpoint until the approval lands. Mints the SAME platform session as the loopback path.
-func RunDeviceLogin(ctx context.Context, cfg *config.Config) error {
+func RunDeviceLogin(ctx context.Context, cfg *config.Config, activate bool) error {
 	endpoints, err := discover(ctx, cfg)
 	if err != nil {
 		return err
@@ -435,22 +435,59 @@ func RunDeviceLogin(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return persistLogin(cfg, creds)
+	return persistLogin(cfg, activate, creds)
 }
 
-// persistLogin labels the credentials with the account identity (best-effort), stores them under
-// the active profile, and records that profile as the active default (a fresh login switches to
-// it). Shared by the loopback and device-code flows.
-func persistLogin(cfg *config.Config, creds *Credentials) error {
+// persistLogin labels the credentials with the account identity (best-effort) and stores them.
+// Login uses the same profile resolution as every command (cfg.Profile: --profile > ZENTORIS_PROFILE
+// > active) but is passive - it does not change which profile is active unless activate is set (the
+// `--activate` flag), which also switches to it. Shared by the loopback and device-code flows.
+func persistLogin(cfg *config.Config, activate bool, creds *Credentials) error {
+	profile := normProfile(cfg.Profile)
 	creds.Subject = subjectFromToken(creds.AccessToken)
-	if err := NewStore().Save(cfg.Profile, creds); err != nil {
+	if err := NewStore().Save(profile, creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	if err := RegisterLogin(cfg.Profile); err != nil {
+
+	// Record the profile (and, with --activate, make it active) BEFORE announcing success, so an
+	// index-write failure is never reported as a completed login.
+	if activate {
+		// SwitchProfile both records the profile in the index AND sets it active - one state write.
+		if err := SwitchProfile(profile); err != nil {
+			// The login itself succeeded (credentials are stored); only the switch failed. Report
+			// that without failing the command, and say how to finish activating.
+			fmt.Fprintf(os.Stderr,
+				"Signed in as %q, but could not make it the active profile: %v.\nRun `zentoris auth switch %s` to activate it.\n",
+				profile, err, profile)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for profile %q.\nActive profile is now %q.\n", profile, profile)
+		return nil
+	}
+	if err := RegisterProfile(profile); err != nil {
 		return fmt.Errorf("record profile: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for profile %q.\n", cfg.Profile)
+	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for profile %q.\n", profile)
+	// The hint applies only to a one-off --profile that isn't the active profile; skip the extra
+	// state read entirely for a bare/env login (cfg.ProfileFromFlag is false there).
+	if cfg.ProfileFromFlag {
+		active, _ := ActiveProfile() // best-effort; the login just wrote valid state
+		if hint := loginHint(profile, true, active); hint != "" {
+			fmt.Fprintln(os.Stderr, hint)
+		}
+	}
 	return nil
+}
+
+// loginHint returns the guidance to print after a passive login when the just-stored profile will
+// NOT be the default going forward - i.e. a one-off --profile (fromFlag) that differs from the
+// active profile. It returns "" when no hint is warranted: the login IS the active profile, or it
+// came from ZENTORIS_PROFILE / the active profile rather than a --profile override.
+func loginHint(profile string, fromFlag bool, active string) string {
+	if !fromFlag || profile == active {
+		return ""
+	}
+	return fmt.Sprintf("Profile %q is not active. Run `zentoris auth switch %s` (or pass --profile %s) to use it by default.", profile, profile, profile)
 }
 
 // requestDeviceAuthorization starts the RFC 8628 flow at the device_authorization endpoint.

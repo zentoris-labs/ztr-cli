@@ -2,6 +2,8 @@ package commands
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,26 @@ import (
 
 	"github.com/zentoris-labs/ztr-cli/internal/auth"
 )
+
+func TestCorruptStateFallsBackToDefault(t *testing.T) {
+	isolate(t)
+	// A present-but-unparseable config.json must not brick the CLI: commands should warn and
+	// resolve to "default" (so `auth login`/`auth switch` can still rewrite the state).
+	dir := filepath.Join(os.Getenv("HOME"), ".zentoris")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("{ not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := runRoot(t, "auth", "status")
+	if !strings.Contains(out, "Active profile: default") {
+		t.Fatalf("output %q, want fallback to \"default\" on corrupt state", out)
+	}
+	if !strings.Contains(out, "could not read the active profile") {
+		t.Fatalf("output %q, want a warning about the unreadable state", out)
+	}
+}
 
 // isolate points HOME at a temp dir, mocks the keychain, and clears every ZENTORIS_/CI env var, so
 // a command-execution test neither touches the real user state nor reaches the network.
@@ -44,7 +66,7 @@ func seedProfile(t *testing.T, name string) {
 	if err := auth.NewStore().Save(name, creds); err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.RegisterLogin(name); err != nil {
+	if err := auth.RegisterProfile(name); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -92,10 +114,31 @@ func TestProfileResolutionFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestAuthLoginFlags(t *testing.T) {
+	cmd := newAuthLoginCmd(&deps{})
+	for _, name := range []string{"activate", "use-device-code"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("auth login should register the --%s flag", name)
+		}
+	}
+}
+
+func TestPassiveLoginDoesNotActivate(t *testing.T) {
+	isolate(t)
+	seedProfile(t, "work") // simulates a passive `auth login --profile work` (stored + registered, not switched)
+	out, _ := runRoot(t, "auth", "status")
+	if !strings.Contains(out, "Active profile: default") {
+		t.Fatalf("output %q, want the active profile to stay 'default' - login must not auto-activate", out)
+	}
+}
+
 func TestAuthListAndSwitch(t *testing.T) {
 	isolate(t)
 	seedProfile(t, "work")
-	seedProfile(t, "personal") // logged in last -> active
+	seedProfile(t, "personal")
+	if err := auth.SwitchProfile("personal"); err != nil { // active is set only by an explicit switch
+		t.Fatal(err)
+	}
 
 	out, err := runRoot(t, "auth", "list")
 	if err != nil {
@@ -112,8 +155,8 @@ func TestAuthListAndSwitch(t *testing.T) {
 	if !strings.Contains(out, `Active profile is now "work"`) {
 		t.Fatalf("switch output %q", out)
 	}
-	if active := auth.ActiveProfile(); active != "work" {
-		t.Fatalf("active = %q, want work after switch", active)
+	if active, err := auth.ActiveProfile(); err != nil || active != "work" {
+		t.Fatalf("active = %q (err %v), want work after switch", active, err)
 	}
 
 	out, _ = runRoot(t, "auth", "list")
@@ -133,6 +176,9 @@ func TestAuthSwitchUnknownProfile(t *testing.T) {
 func TestAuthLogout(t *testing.T) {
 	isolate(t)
 	seedProfile(t, "work")
+	if err := auth.SwitchProfile("work"); err != nil { // make it active so logout has something to clear
+		t.Fatal(err)
+	}
 
 	out, err := runRoot(t, "--profile", "work", "auth", "logout")
 	if err != nil {

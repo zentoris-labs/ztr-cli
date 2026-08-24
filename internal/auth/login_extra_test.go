@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,28 @@ import (
 
 	"github.com/zentoris-labs/ztr-cli/internal/config"
 )
+
+func TestLoginHint(t *testing.T) {
+	cases := []struct {
+		name            string
+		profile, active string
+		fromFlag, want  bool
+	}{
+		{"bare login into the active profile", "default", "default", false, false},
+		{"env or active (not a flag)", "work", "default", false, false},
+		{"--profile override that is not active", "work", "default", true, true},
+		{"--profile that is already active", "work", "work", true, false},
+	}
+	for _, tc := range cases {
+		got := loginHint(tc.profile, tc.fromFlag, tc.active)
+		if (got != "") != tc.want {
+			t.Errorf("%s: loginHint = %q, want a hint = %v", tc.name, got, tc.want)
+		}
+		if tc.want && !strings.Contains(got, tc.profile) {
+			t.Errorf("%s: hint %q should name the profile", tc.name, got)
+		}
+	}
+}
 
 func TestLoginSourceName(t *testing.T) {
 	if NewLoginSource(&config.Config{}).Name() != "login" {
@@ -60,25 +83,56 @@ func TestDecodeTokenResponse(t *testing.T) {
 	}
 }
 
-func TestPersistLoginStoresLabelsAndActivates(t *testing.T) {
+func TestPersistLoginPassive(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
 
 	enc := base64.RawURLEncoding.EncodeToString
 	jwt := enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(`{"email":"me@zentoris.test"}`)) + ".sig"
-	if err := persistLogin(&config.Config{Profile: "work"},
-		&Credentials{AccessToken: jwt, RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}); err != nil {
+	cfg := &config.Config{Profile: "work"}
+	if err := persistLogin(cfg, false, &Credentials{AccessToken: jwt, RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 
+	// Login targets the explicitly-pinned profile and labels it with the account identity...
 	got, _ := NewStore().Load("work")
 	if got == nil || got.AccessToken != jwt {
-		t.Fatalf("stored creds = %+v, want the access token persisted", got)
+		t.Fatalf("stored creds = %+v, want the token persisted under the target profile", got)
 	}
 	if got.Subject != "me@zentoris.test" {
 		t.Fatalf("subject = %q, want it parsed from the JWT at login", got.Subject)
 	}
-	if ActiveProfile() != "work" {
-		t.Fatalf("active = %q, want work (a fresh login activates its profile)", ActiveProfile())
+	// ...but passive login must NOT change the active profile.
+	if mustActive(t) != "default" {
+		t.Fatalf("passive login must not activate; active = %q", mustActive(t))
+	}
+}
+
+func TestPersistLoginActivate(t *testing.T) {
+	keyring.MockInit()
+	withTempDir(t)
+
+	cfg := &config.Config{Profile: "work"}
+	if err := persistLogin(cfg, true, &Credentials{AccessToken: "at", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if mustActive(t) != "work" {
+		t.Fatalf("--activate should switch the active profile to work; got %q", mustActive(t))
+	}
+}
+
+func TestPersistLoginTargetsDefaultWhenUnpinned(t *testing.T) {
+	keyring.MockInit()
+	withTempDir(t)
+
+	// Nothing pinned (cfg.Profile empty) -> the login target normalizes to "default".
+	if err := persistLogin(&config.Config{}, false, &Credentials{AccessToken: "at"}); err != nil {
+		t.Fatal(err)
+	}
+	if b := NewStore().Backend("default"); b != "keychain" {
+		t.Fatalf(`bare login should store under "default"; backend = %q`, b)
+	}
+	if mustActive(t) != "default" {
+		t.Fatalf("bare passive login must not activate; active = %q", mustActive(t))
 	}
 }

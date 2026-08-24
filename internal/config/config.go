@@ -25,8 +25,12 @@ type Config struct {
 	// knob, so there is no split between the two hosts to keep in sync.
 	APIBase  string // Zentoris main API base URL (derived: main.api.<domain>)
 	AuthBase string // Zentoris auth / OP base URL (derived: auth.api.<domain>)
-	Profile  string // named profile (which stored login executes the action)
-	Insecure bool   // skip TLS verification (self-signed local dev)
+	Profile  string // profile a command runs as: --profile > ZENTORIS_PROFILE > active (>= "default")
+	// ProfileFromFlag is true when the profile came from the --profile flag (a one-off override), as
+	// opposed to ZENTORIS_PROFILE or the active profile. Used only to decide whether `auth login`
+	// prints the "not active" hint - so the auth layer needn't re-read the environment.
+	ProfileFromFlag bool
+	Insecure        bool // skip TLS verification (self-signed local dev)
 
 	// Domain is the base host the service URLs are derived from as <svc>.api.<domain>. It defaults
 	// to the hosted platform; pass another base domain (--domain / ZENTORIS_DOMAIN) to reach a
@@ -49,8 +53,8 @@ func Load() *Config {
 	c := &Config{
 		Domain: envOr("ZENTORIS_DOMAIN", defaultDomain),
 		// Profile is left as the raw ZENTORIS_PROFILE (possibly empty) here; the command layer
-		// resolves the final value after flags parse (flag > env > active profile > "default"),
-		// since the persisted active profile lives in internal/auth, which config must not import.
+		// resolves the final value after flags parse (flag > env > active profile), since the
+		// persisted active profile lives in internal/auth, which config must not import.
 		Profile:      os.Getenv("ZENTORIS_PROFILE"),
 		Token:        os.Getenv("ZENTORIS_TOKEN"),
 		ClientID:     os.Getenv("ZENTORIS_CLIENT_ID"),

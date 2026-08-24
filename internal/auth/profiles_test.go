@@ -2,6 +2,8 @@ package auth
 
 import (
 	"encoding/base64"
+	"os"
+	"sync"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -14,6 +16,16 @@ func withTempDir(t *testing.T) {
 	old := zentorisDir
 	zentorisDir = func() string { return dir }
 	t.Cleanup(func() { zentorisDir = old })
+}
+
+// mustActive returns ActiveProfile(), failing the test on a read error.
+func mustActive(t *testing.T) string {
+	t.Helper()
+	a, err := ActiveProfile()
+	if err != nil {
+		t.Fatalf("ActiveProfile: %v", err)
+	}
+	return a
 }
 
 func TestStateRoundTrip(t *testing.T) {
@@ -32,7 +44,7 @@ func TestStateRoundTrip(t *testing.T) {
 	s.add("work") // idempotent
 	s.add("personal")
 	s.Active = "work"
-	if err := s.Save(); err != nil {
+	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,6 +68,55 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConcurrentRegisterProfileKeepsAll(t *testing.T) {
+	keyring.MockInit()
+	withTempDir(t)
+
+	names := []string{"a", "b", "c", "d", "e", "f"}
+	var wg sync.WaitGroup
+	for _, n := range names {
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
+			if err := RegisterProfile(n); err != nil {
+				t.Errorf("RegisterProfile(%s): %v", n, err)
+			}
+		}(n)
+	}
+	wg.Wait()
+
+	// Without the shared state lock, concurrent LoadState->add->Save cycles clobber each other and
+	// some names are lost; with it, every profile survives in the index.
+	s, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if !s.has(n) {
+			t.Errorf("profile %q lost from the index under concurrent registration", n)
+		}
+	}
+}
+
+func TestActiveProfileErrorsOnCorruptState(t *testing.T) {
+	withTempDir(t)
+	// A valid-but-empty state yields "default" with no error.
+	if a, err := ActiveProfile(); err != nil || a != "default" {
+		t.Fatalf("empty state: got (%q, %v), want (default, nil)", a, err)
+	}
+	// A present-but-unparseable state file must surface an error, NOT silently resolve to "default"
+	// (which would run commands as the wrong identity).
+	if err := os.MkdirAll(zentorisDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ActiveProfile(); err == nil {
+		t.Fatal("ActiveProfile must return an error for a corrupt state file")
+	}
+}
+
 func TestSwitchProfileRequiresCredentials(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
@@ -71,27 +132,30 @@ func TestSwitchProfileRequiresCredentials(t *testing.T) {
 	if err := SwitchProfile("work"); err != nil {
 		t.Fatalf("switch to a logged-in profile: %v", err)
 	}
-	if ActiveProfile() != "work" {
-		t.Errorf("active = %q, want work", ActiveProfile())
+	if mustActive(t) != "work" {
+		t.Errorf("active = %q, want work", mustActive(t))
 	}
 }
 
-func TestRegisterAndUnregisterLogin(t *testing.T) {
+func TestRegisterAndUnregisterProfile(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
 
-	if err := RegisterLogin("work"); err != nil {
+	if err := RegisterProfile("work"); err != nil {
 		t.Fatal(err)
 	}
-	if ActiveProfile() != "work" {
-		t.Errorf("a fresh login should become active; got %q", ActiveProfile())
+	// Registering a login is passive: it indexes the profile but must NOT activate it.
+	if mustActive(t) != "default" {
+		t.Errorf("RegisterProfile must not change the active profile (stays default); got %q", mustActive(t))
+	}
+	if s, _ := LoadState(); !s.has("work") {
+		t.Error("RegisterProfile should add the profile to the index")
 	}
 	if err := UnregisterLogout("work"); err != nil {
 		t.Fatal(err)
 	}
-	s, _ := LoadState()
-	if s.has("work") || s.Active == "work" {
-		t.Errorf("logout should drop the profile and clear active; got %+v", s)
+	if s, _ := LoadState(); s.has("work") {
+		t.Error("logout should drop the profile from the index")
 	}
 }
 
@@ -99,16 +163,15 @@ func TestListProfiles(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
 
-	if err := NewStore().Save("work", &Credentials{AccessToken: "at"}); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"work", "personal"} {
+		if err := NewStore().Save(name, &Credentials{AccessToken: "at-" + name}); err != nil {
+			t.Fatal(err)
+		}
+		if err := RegisterProfile(name); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := RegisterLogin("work"); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewStore().Save("personal", &Credentials{AccessToken: "at2"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RegisterLogin("personal"); err != nil { // personal becomes active (most recent login)
+	if err := SwitchProfile("personal"); err != nil { // active is set only by an explicit switch
 		t.Fatal(err)
 	}
 
@@ -119,7 +182,7 @@ func TestListProfiles(t *testing.T) {
 	if len(infos) != 2 {
 		t.Fatalf("got %d profiles, want 2: %+v", len(infos), infos)
 	}
-	// Sorted: personal, work. personal is active (logged in last).
+	// Sorted: personal, work. personal is the one we switched to.
 	if infos[0].Name != "personal" || !infos[0].Active {
 		t.Errorf("expected personal active and first, got %+v", infos[0])
 	}

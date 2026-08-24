@@ -41,8 +41,11 @@ func LoadState() (*State, error) {
 	return &s, nil
 }
 
-// Save writes the profile index as a 0600 file under the 0700 state directory.
-func (s *State) Save() error {
+// save writes the profile index as a 0600 file under the 0700 state directory. It writes to a temp
+// file and renames, so a concurrent reader never observes a half-written file. It is unexported so
+// the only write path is updateState (which holds the shared state lock) - no caller can persist
+// the index without the lock.
+func (s *State) save() error {
 	if err := os.MkdirAll(zentorisDir(), 0o700); err != nil {
 		return err
 	}
@@ -50,7 +53,33 @@ func (s *State) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(), b, 0o600)
+	tmp := statePath() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, statePath()); err != nil {
+		_ = os.Remove(tmp) // don't leave a stale temp behind
+		return err
+	}
+	return nil
+}
+
+// updateState applies mutate to the profile index under the shared state lock and persists it, so
+// concurrent index changes (login / switch / logout across processes) cannot clobber each other. It
+// writes only when mutate reports a change, and a mutate that returns an error aborts without
+// writing.
+func updateState(mutate func(*State) (changed bool, err error)) error {
+	return withStateLock(func() error {
+		s, err := LoadState()
+		if err != nil {
+			return err
+		}
+		changed, err := mutate(s)
+		if err != nil || !changed {
+			return err
+		}
+		return s.save()
+	})
 }
 
 func (s *State) has(profile string) bool {
@@ -62,77 +91,78 @@ func (s *State) has(profile string) bool {
 	return false
 }
 
-// add records a profile in the index (idempotent), keeping the list sorted.
-func (s *State) add(profile string) {
+// add records a profile in the index (idempotent), keeping the list sorted. It reports whether the
+// profile was actually added (false when it was already present).
+func (s *State) add(profile string) bool {
 	if profile == "" || s.has(profile) {
-		return
+		return false
 	}
 	s.Profiles = append(s.Profiles, profile)
 	sort.Strings(s.Profiles)
+	return true
 }
 
-// remove drops a profile from the index and clears Active if it pointed there.
-func (s *State) remove(profile string) {
+// remove drops a profile from the index and clears Active if it pointed there. It reports whether
+// anything changed.
+func (s *State) remove(profile string) bool {
 	kept := make([]string, 0, len(s.Profiles))
 	for _, p := range s.Profiles {
 		if p != profile {
 			kept = append(kept, p)
 		}
 	}
+	changed := len(kept) != len(s.Profiles)
 	s.Profiles = kept
 	if s.Active == profile {
 		s.Active = ""
+		changed = true
 	}
+	return changed
 }
 
-// ActiveProfile returns the profile marked active by `auth switch`, or "" when none is set. Used to
-// resolve the default profile when neither --profile nor ZENTORIS_PROFILE is given.
-func ActiveProfile() string {
+// ActiveProfile returns the profile every command runs as when neither --profile nor
+// ZENTORIS_PROFILE is given: the one last chosen by `auth switch` (or `auth login --activate`), or
+// "default" when none has been. The active profile is always a concrete value, seeded to "default".
+// The error is non-nil only when the state file exists but cannot be read/parsed - callers should
+// surface it rather than silently fall back to "default", which would run as the wrong identity.
+func ActiveProfile() (string, error) {
 	s, err := LoadState()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return s.Active
+	return normProfile(s.Active), nil // "" (never switched) means "default"
 }
 
-// RegisterLogin records a successful login under profile and makes it the active default (a fresh
-// login switches to that profile, matching gh).
-func RegisterLogin(profile string) error {
+// RegisterProfile records a profile in the index (so `auth list` shows it) without touching the
+// active profile. `auth login` is passive: it stores credentials and registers the profile, but
+// only `auth switch` (or `auth login --activate`) changes which profile is active.
+func RegisterProfile(profile string) error {
 	profile = normProfile(profile)
-	s, err := LoadState()
-	if err != nil {
-		return err
-	}
-	s.add(profile)
-	s.Active = profile
-	return s.Save()
+	return updateState(func(s *State) (bool, error) { return s.add(profile), nil })
 }
 
 // UnregisterLogout removes profile from the index after logout, clearing Active if it was active.
 func UnregisterLogout(profile string) error {
 	profile = normProfile(profile)
-	s, err := LoadState()
-	if err != nil {
-		return err
-	}
-	s.remove(profile)
-	return s.Save()
+	return updateState(func(s *State) (bool, error) { return s.remove(profile), nil })
 }
 
 // SwitchProfile makes profile the active default. It requires that profile already has stored
-// credentials, so you cannot switch to a profile you have not logged into.
+// credentials, so you cannot switch to a profile you have not logged into. The credentials check
+// runs under the state lock (inside updateState) so it is atomic with setting the active profile.
 func SwitchProfile(profile string) error {
 	profile = normProfile(profile)
-	if NewStore().Backend(profile) == "none" {
-		return fmt.Errorf("no stored credentials for profile %q; run `zentoris --profile %s auth login` first", profile, profile)
-	}
-	s, err := LoadState()
-	if err != nil {
-		return err
-	}
-	s.add(profile)
-	s.Active = profile
-	return s.Save()
+	return updateState(func(s *State) (bool, error) {
+		if NewStore().Backend(profile) == "none" {
+			return false, fmt.Errorf("no stored credentials for profile %q; run `zentoris --profile %s auth login` first", profile, profile)
+		}
+		changed := s.add(profile)
+		if s.Active != profile {
+			s.Active = profile
+			changed = true
+		}
+		return changed, nil
+	})
 }
 
 // ProfileInfo is one row of `zentoris auth list`.
@@ -165,10 +195,11 @@ func ListProfiles() ([]ProfileInfo, error) {
 		}
 	}
 
+	active := normProfile(s.Active) // the active profile is always concrete; "" means "default"
 	store := NewStore()
 	out := make([]ProfileInfo, 0, len(names))
 	for name := range names {
-		info := ProfileInfo{Name: name, Active: name == s.Active, Backend: store.Backend(name)}
+		info := ProfileInfo{Name: name, Active: name == active, Backend: store.Backend(name)}
 		if creds, err := store.Load(name); err == nil && creds != nil {
 			info.Subject = creds.Subject
 			info.Expired = !creds.Expiry.IsZero() && time.Now().After(creds.Expiry)

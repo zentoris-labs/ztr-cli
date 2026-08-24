@@ -22,23 +22,27 @@ func newAuthCmd(d *deps) *cobra.Command {
 }
 
 func newAuthLoginCmd(d *deps) *cobra.Command {
-	var device bool
+	var device, activate bool
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Sign in interactively (loopback PKCE, or --use-device-code for headless)",
-		Long: "Sign in as a user and cache the resulting Zentoris session for this profile.\n\n" +
+		Long: "Sign in as a user and cache the Zentoris session for a profile.\n\n" +
+			"Login is passive: it signs into the resolved profile (--profile, else ZENTORIS_PROFILE,\n" +
+			"else the active profile) and does NOT change which profile is active. Switch with\n" +
+			"`zentoris auth switch <profile>`, or pass --activate to switch in one step.\n\n" +
 			"Default: a browser loopback-PKCE flow. On an SSH session or a headless host (no\n" +
 			"local browser), zentoris automatically switches to the RFC 8628 device flow - print a\n" +
 			"code, approve it in any browser. Pass --use-device-code to force the device flow.",
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			if device || auth.IsHeadless() {
-				return auth.RunDeviceLogin(c.Context(), d.cfg)
+				return auth.RunDeviceLogin(c.Context(), d.cfg, activate)
 			}
-			return auth.RunInteractiveLogin(c.Context(), d.cfg)
+			return auth.RunInteractiveLogin(c.Context(), d.cfg, activate)
 		},
 	}
 	cmd.Flags().BoolVar(&device, "use-device-code", false, "force the RFC 8628 device-code flow (no local browser; SSH/headless)")
+	cmd.Flags().BoolVar(&activate, "activate", false, "also switch the active profile to this login")
 	return cmd
 }
 
