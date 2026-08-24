@@ -36,16 +36,16 @@ surface to only what earns its place, and wrote down why.
    unconditionally. The previous behavior silently substituted `*` for an empty value, which
    looked like concurrency control but provided none.
 
-6. **Kept the named-login concept, renamed to account** (`--account` / `ZENTORIS_ACCOUNT`). Each
-   account is a separately-stored login (its own keychain entry / file), so several accounts can
-   coexist and a command runs as the chosen one; `default` is used when unset. It was inherited as
-   `--profile`, but renamed because an account is a login identity, not an AWS-style freely-defined
-   settings bundle. Subsequently built out into a managed feature (`auth list` / `auth switch`, a
-   persisted active account, captured identity) - see [0002](0002-managed-accounts.md).
+6. **Kept the named-login concept, called a profile** (`--profile` / `ZENTORIS_PROFILE`). Each
+   profile is a separately-stored login (its own keychain entry / file), so several logins can
+   coexist and a command runs as the chosen one; `default` is used when unset. The name follows the
+   AWS CLI: a profile is a free-form label you choose, not a fixed account id - the account identity
+   is captured from the token and shown separately. Built out into a managed feature (`auth list` /
+   `auth switch`, a persisted active profile, captured identity) - see [0002](0002-managed-profiles.md).
 
 ## Consequences
 
-- The public surface is `--domain`, `--token`, `--account`, `--insecure` (root), plus per-command
+- The public surface is `--domain`, `--token`, `--profile`, `--insecure` (root), plus per-command
   flags. Fewer knobs to document, learn, and keep honest.
 - Endpoint and identity resolution live in one place (`internal/config`, `internal/auth`), so
   there is no split state to keep consistent.

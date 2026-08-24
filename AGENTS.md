@@ -51,7 +51,7 @@ internal/
   per file under `internal/commands`.
 - **Config precedence is defaults < environment < flags.** Not every setting has an environment
   variable - only the ones worth setting once per shell or injecting in CI do (credentials, the
-  account, the endpoint). When a setting has an env var it uses the `ZENTORIS_` prefix and no
+  profile, the endpoint). When a setting has an env var it uses the `ZENTORIS_` prefix and no
   other, to avoid collisions with unrelated environment variables.
 - **Keep the flag/env surface small.** A flag or env var is a public promise that is hard to
   remove once shipped; add one only when it earns its place, and prefer deriving a value over

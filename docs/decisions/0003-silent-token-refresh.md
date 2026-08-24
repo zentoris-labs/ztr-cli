@@ -1,8 +1,8 @@
-# 0003 - Silent token refresh with a per-account lock
+# 0003 - Silent token refresh with a per-profile lock
 
 - Status: Accepted
 - Date: 2026-08-20
-- Follows: [0002](0002-managed-accounts.md)
+- Follows: [0002](0002-managed-profiles.md)
 
 ## Context
 
@@ -25,10 +25,10 @@ credential source does anything, so refresh is a concern for the **login** sourc
   (or is within a 60s skew), exchange the stored refresh token for a fresh one (RFC 6749
   `refresh_token` grant), persist it, and continue. Sign in once; re-authenticate only when the
   refresh token itself expires or is revoked.
-- **Guard concurrent refresh with a per-account cross-process lock.** Parallel invocations share
-  one account's stored credentials; because OPs commonly *rotate* refresh tokens, two processes
+- **Guard concurrent refresh with a per-profile cross-process lock.** Parallel invocations share
+  one profile.s stored credentials; because OPs commonly *rotate* refresh tokens, two processes
   refreshing at once can trigger refresh-token-reuse detection and revoke the whole chain. The
-  renew path therefore runs under an exclusive file lock (`~/.zentoris/credentials-<account>.lock`)
+  renew path therefore runs under an exclusive file lock (`~/.zentoris/credentials-<profile>.lock`)
   with a **check-lock-check**: re-read inside the lock and reuse a token another process just wrote
   rather than refreshing again. The lock is a separate file, so it works whether credentials live
   in the keychain or a file.

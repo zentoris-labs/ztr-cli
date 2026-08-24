@@ -54,7 +54,7 @@ one source, so `zentoris auth status` reports which one would be used.
 ### `zentoris auth login`
 
 Interactive sign-in mints a regular platform user session (the same session the web
-console gets) and caches it for the active account.
+console gets) and caches it for the active profile.
 
 - **Loopback (default):** opens your browser to a `127.0.0.1` callback. No code to type.
 - **Device flow (RFC 8628):** pass `--use-device-code`, or let the CLI auto-select it on an SSH
@@ -65,29 +65,30 @@ Credentials are stored in your OS keychain (macOS Keychain, Windows Credential M
 or the Linux Secret Service) when one is reachable, and in a `0600` file under `~/.zentoris`
 otherwise. `zentoris auth status` names which store is in use.
 
-### Accounts (multiple logins)
+### Profiles (multiple logins)
 
-An **account** is a named, separately-stored login. Sign in under different account names to keep
-several accounts side by side, then choose which one runs a command:
+A **profile** is a named, separately-stored login - a free-form label you choose (like the AWS
+CLI's profiles), not a fixed account id. Sign in under different profile names to keep several
+logins side by side, then choose which one runs a command:
 
 ```bash
-zentoris --account work auth login         # sign in and cache the "work" account
-zentoris --account personal auth login     # a second, independent account (now the active one)
-zentoris auth list                          # show all accounts; "*" marks the active default
-zentoris auth switch work                   # make "work" the active default
-zentoris service list                       # runs as the active account ("work")
-zentoris --account personal service list    # override for just this command
+zentoris --profile work auth login          # sign in and cache the "work" profile
+zentoris --profile personal auth login      # a second, independent login (now the active one)
+zentoris auth list                           # show all profiles; "*" marks the active default
+zentoris auth switch work                    # make "work" the active default
+zentoris service list                        # runs as the active profile ("work")
+zentoris --profile personal service list     # override for just this command
 ```
 
-The **active** account is used when you pass neither `--account` nor `ZENTORIS_ACCOUNT`. A fresh
-`auth login` becomes active; `auth switch <account>` changes it (the target must already be logged
-in). Resolution order is `--account` > `ZENTORIS_ACCOUNT` > the active account > `default`.
+The **active** profile is used when you pass neither `--profile` nor `ZENTORIS_PROFILE`. A fresh
+`auth login` becomes active; `auth switch <profile>` changes it (the target must already be logged
+in). Resolution order is `--profile` > `ZENTORIS_PROFILE` > the active profile > `default`.
 
-Each account's credentials live under their own keychain entry / file, so
-`zentoris --account work auth logout` drops only that account. `auth status` shows the active
-account, where its credentials are stored, and - when the sign-in token carried one - the account
-identity. Accounts apply to `auth login` sessions; a `--token`, client-credentials, or CI-OIDC
-credential is a single identity and ignores the account.
+Each profile's credentials live under their own keychain entry / file, so
+`zentoris --profile work auth logout` drops only that profile. `auth status` shows the active
+profile, where its credentials are stored, and - when the sign-in token carried one - the account
+identity behind it. Profiles apply to `auth login` sessions; a `--token`, client-credentials, or
+CI-OIDC credential is a single identity and ignores the profile.
 
 ## Configuration
 
@@ -97,7 +98,7 @@ environment variable. Flags win over environment, which wins over the defaults.
 | Setting  | Flag           | Env                | Default                          |
 |----------|----------------|--------------------|----------------------------------|
 | Domain   | `--domain`     | `ZENTORIS_DOMAIN`  | `zentoris.com`                   |
-| Account  | `--account`    | `ZENTORIS_ACCOUNT` | `default`                        |
+| Profile  | `--profile`    | `ZENTORIS_PROFILE` | `default`                        |
 | Token    | `--token`      | `ZENTORIS_TOKEN`   | (unset)                          |
 | Skip TLS | `--insecure`   | -                  | `false`                          |
 
@@ -127,10 +128,10 @@ use it against a real deployment.
 zentoris
   auth
     login [--use-device-code]  sign in: loopback (default) or RFC 8628 device flow
-    logout                drop stored credentials for the current account
-    status                show the active account, credential source, and where it is stored
-    list                  list logged-in accounts; "*" marks the active one
-    switch <account>      set the active account used when --account is not given
+    logout                drop stored credentials for the current profile
+    status                show the active profile, credential source, and where it is stored
+    list                  list logged-in profiles; "*" marks the active one
+    switch <profile>      set the active profile used when --profile is not given
     print-access-token    print the resolved bearer (for scripting)
   service
     list
