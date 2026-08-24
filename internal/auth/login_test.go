@@ -45,7 +45,7 @@ func TestLoginSourceSilentlyRefreshes(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	cfg := &config.Config{AuthBase: srv.URL, Account: "work"}
+	cfg := &config.Config{AuthBase: srv.URL, Profile: "work"}
 	store := NewStore()
 	// An already-expired access token, but with a valid refresh token to renew from.
 	if err := store.Save("work", &Credentials{AccessToken: "at-old", RefreshToken: "rt-1", Expiry: time.Now().Add(-time.Hour)}); err != nil {
@@ -79,7 +79,7 @@ func TestLoginSourceExpiredNoRefreshToken(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
 
-	cfg := &config.Config{Account: "work"}
+	cfg := &config.Config{Profile: "work"}
 	if err := NewStore().Save("work", &Credentials{AccessToken: "at-old", Expiry: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ func apiDeps(t *testing.T, h http.HandlerFunc) (*deps, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	cfg := &config.Config{APIBase: srv.URL, Token: "fake-token", Account: "default"}
+	cfg := &config.Config{APIBase: srv.URL, Token: "fake-token", Profile: "default"}
 	resolver := auth.DefaultChain(cfg)
 	return &deps{cfg: cfg, resolver: resolver, api: api.New(cfg, resolver, "test")}, srv
 }

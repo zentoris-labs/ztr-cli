@@ -24,7 +24,7 @@ func TestStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState on empty dir: %v", err)
 	}
-	if s.Active != "" || len(s.Accounts) != 0 {
+	if s.Active != "" || len(s.Profiles) != 0 {
 		t.Fatalf("empty state expected, got %+v", s)
 	}
 
@@ -43,8 +43,8 @@ func TestStateRoundTrip(t *testing.T) {
 	if got.Active != "work" {
 		t.Errorf("active = %q, want work", got.Active)
 	}
-	if len(got.Accounts) != 2 || got.Accounts[0] != "personal" || got.Accounts[1] != "work" {
-		t.Errorf("accounts = %v, want sorted [personal work]", got.Accounts)
+	if len(got.Profiles) != 2 || got.Profiles[0] != "personal" || got.Profiles[1] != "work" {
+		t.Errorf("profiles = %v, want sorted [personal work]", got.Profiles)
 	}
 
 	got.remove("work")
@@ -52,27 +52,27 @@ func TestStateRoundTrip(t *testing.T) {
 		t.Error("work should be gone after remove")
 	}
 	if got.Active != "" {
-		t.Error("removing the active account should clear Active")
+		t.Error("removing the active profile should clear Active")
 	}
 }
 
-func TestSwitchAccountRequiresCredentials(t *testing.T) {
+func TestSwitchProfileRequiresCredentials(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
 
-	// Switching to an account with no stored credentials is refused.
-	if err := SwitchAccount("ghost"); err == nil {
-		t.Fatal("expected an error switching to an account with no credentials")
+	// Switching to a profile with no stored credentials is refused.
+	if err := SwitchProfile("ghost"); err == nil {
+		t.Fatal("expected an error switching to a profile with no credentials")
 	}
 
 	if err := NewStore().Save("work", &Credentials{AccessToken: "at"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SwitchAccount("work"); err != nil {
-		t.Fatalf("switch to a logged-in account: %v", err)
+	if err := SwitchProfile("work"); err != nil {
+		t.Fatalf("switch to a logged-in profile: %v", err)
 	}
-	if ActiveAccount() != "work" {
-		t.Errorf("active = %q, want work", ActiveAccount())
+	if ActiveProfile() != "work" {
+		t.Errorf("active = %q, want work", ActiveProfile())
 	}
 }
 
@@ -83,19 +83,19 @@ func TestRegisterAndUnregisterLogin(t *testing.T) {
 	if err := RegisterLogin("work"); err != nil {
 		t.Fatal(err)
 	}
-	if ActiveAccount() != "work" {
-		t.Errorf("a fresh login should become active; got %q", ActiveAccount())
+	if ActiveProfile() != "work" {
+		t.Errorf("a fresh login should become active; got %q", ActiveProfile())
 	}
 	if err := UnregisterLogout("work"); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := LoadState()
 	if s.has("work") || s.Active == "work" {
-		t.Errorf("logout should drop the account and clear active; got %+v", s)
+		t.Errorf("logout should drop the profile and clear active; got %+v", s)
 	}
 }
 
-func TestListAccounts(t *testing.T) {
+func TestListProfiles(t *testing.T) {
 	keyring.MockInit()
 	withTempDir(t)
 
@@ -112,12 +112,12 @@ func TestListAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	infos, err := ListAccounts()
+	infos, err := ListProfiles()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(infos) != 2 {
-		t.Fatalf("got %d accounts, want 2: %+v", len(infos), infos)
+		t.Fatalf("got %d profiles, want 2: %+v", len(infos), infos)
 	}
 	// Sorted: personal, work. personal is active (logged in last).
 	if infos[0].Name != "personal" || !infos[0].Active {

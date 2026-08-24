@@ -18,7 +18,7 @@ func isolate(t *testing.T) {
 	keyring.MockInit()
 	t.Setenv("HOME", t.TempDir())
 	for _, k := range []string{
-		"ZENTORIS_ACCOUNT", "ZENTORIS_TOKEN", "ZENTORIS_CLIENT_ID", "ZENTORIS_CLIENT_SECRET",
+		"ZENTORIS_PROFILE", "ZENTORIS_TOKEN", "ZENTORIS_CLIENT_ID", "ZENTORIS_CLIENT_SECRET",
 		"ZENTORIS_DOMAIN", "ZENTORIS_OIDC_TOKEN", "ZENTORIS_OIDC_TOKEN_FILE",
 		"ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 	} {
@@ -38,7 +38,7 @@ func runRoot(t *testing.T, args ...string) (string, error) {
 	return buf.String(), err
 }
 
-func seedAccount(t *testing.T, name string) {
+func seedProfile(t *testing.T, name string) {
 	t.Helper()
 	creds := &auth.Credentials{AccessToken: "tok-" + name + "-long", Expiry: time.Now().Add(time.Hour)}
 	if err := auth.NewStore().Save(name, creds); err != nil {
@@ -49,43 +49,43 @@ func seedAccount(t *testing.T, name string) {
 	}
 }
 
-func TestAccountResolutionFromFlag(t *testing.T) {
+func TestProfileResolutionFromFlag(t *testing.T) {
 	isolate(t)
-	out, _ := runRoot(t, "--account", "foo", "auth", "status")
-	if !strings.Contains(out, "Active account: foo") {
-		t.Fatalf("output %q, want 'Active account: foo'", out)
+	out, _ := runRoot(t, "--profile", "foo", "auth", "status")
+	if !strings.Contains(out, "Active profile: foo") {
+		t.Fatalf("output %q, want 'Active profile: foo'", out)
 	}
 }
 
-func TestAccountResolutionFromEnv(t *testing.T) {
+func TestProfileResolutionFromEnv(t *testing.T) {
 	isolate(t)
-	t.Setenv("ZENTORIS_ACCOUNT", "bar")
+	t.Setenv("ZENTORIS_PROFILE", "bar")
 	out, _ := runRoot(t, "auth", "status")
-	if !strings.Contains(out, "Active account: bar") {
-		t.Fatalf("output %q, want 'Active account: bar'", out)
+	if !strings.Contains(out, "Active profile: bar") {
+		t.Fatalf("output %q, want 'Active profile: bar'", out)
 	}
 }
 
-func TestAccountResolutionFromActiveDefault(t *testing.T) {
+func TestProfileResolutionFromActiveDefault(t *testing.T) {
 	isolate(t)
-	seedAccount(t, "act")
-	if err := auth.SwitchAccount("act"); err != nil {
+	seedProfile(t, "act")
+	if err := auth.SwitchProfile("act"); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := runRoot(t, "auth", "status")
-	if !strings.Contains(out, "Active account: act") {
-		t.Fatalf("output %q, want 'Active account: act' from the persisted active account", out)
+	if !strings.Contains(out, "Active profile: act") {
+		t.Fatalf("output %q, want 'Active profile: act' from the persisted active profile", out)
 	}
 	if !strings.Contains(out, "Authenticated via login") {
 		t.Fatalf("output %q, want it to resolve the seeded login", out)
 	}
 }
 
-func TestAccountResolutionFallsBackToDefault(t *testing.T) {
+func TestProfileResolutionFallsBackToDefault(t *testing.T) {
 	isolate(t)
 	out, _ := runRoot(t, "auth", "status")
-	if !strings.Contains(out, "Active account: default") {
-		t.Fatalf("output %q, want 'Active account: default'", out)
+	if !strings.Contains(out, "Active profile: default") {
+		t.Fatalf("output %q, want 'Active profile: default'", out)
 	}
 	if !strings.Contains(out, "Not authenticated") {
 		t.Fatalf("output %q, want 'Not authenticated' with no credentials", out)
@@ -94,8 +94,8 @@ func TestAccountResolutionFallsBackToDefault(t *testing.T) {
 
 func TestAuthListAndSwitch(t *testing.T) {
 	isolate(t)
-	seedAccount(t, "work")
-	seedAccount(t, "personal") // logged in last -> active
+	seedProfile(t, "work")
+	seedProfile(t, "personal") // logged in last -> active
 
 	out, err := runRoot(t, "auth", "list")
 	if err != nil {
@@ -109,10 +109,10 @@ func TestAuthListAndSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `Active account is now "work"`) {
+	if !strings.Contains(out, `Active profile is now "work"`) {
 		t.Fatalf("switch output %q", out)
 	}
-	if active := auth.ActiveAccount(); active != "work" {
+	if active := auth.ActiveProfile(); active != "work" {
 		t.Fatalf("active = %q, want work after switch", active)
 	}
 
@@ -122,7 +122,7 @@ func TestAuthListAndSwitch(t *testing.T) {
 	}
 }
 
-func TestAuthSwitchUnknownAccount(t *testing.T) {
+func TestAuthSwitchUnknownProfile(t *testing.T) {
 	isolate(t)
 	_, err := runRoot(t, "auth", "switch", "ghost")
 	if err == nil || !strings.Contains(err.Error(), "no stored credentials") {
@@ -132,13 +132,13 @@ func TestAuthSwitchUnknownAccount(t *testing.T) {
 
 func TestAuthLogout(t *testing.T) {
 	isolate(t)
-	seedAccount(t, "work")
+	seedProfile(t, "work")
 
-	out, err := runRoot(t, "--account", "work", "auth", "logout")
+	out, err := runRoot(t, "--profile", "work", "auth", "logout")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `Logged out account "work"`) {
+	if !strings.Contains(out, `Logged out profile "work"`) {
 		t.Fatalf("logout output %q", out)
 	}
 	if b := auth.NewStore().Backend("work"); b != "none" {

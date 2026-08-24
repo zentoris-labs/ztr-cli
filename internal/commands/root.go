@@ -39,7 +39,7 @@ func NewRootCmd() *cobra.Command {
 	// knob: the default reaches the hosted platform; point it at another deployment's base domain.
 	f.StringVar(&cfg.Domain, "domain", cfg.Domain, "base domain for Zentoris service URLs (env ZENTORIS_DOMAIN)")
 	f.StringVar(&cfg.Token, "token", cfg.Token, "explicit bearer token or PAT (env ZENTORIS_TOKEN)")
-	f.StringVar(&cfg.Account, "account", cfg.Account, "named account / login to act as (env ZENTORIS_ACCOUNT)")
+	f.StringVar(&cfg.Profile, "profile", cfg.Profile, "named profile / login to act as (env ZENTORIS_PROFILE)")
 	f.BoolVar(&cfg.Insecure, "insecure", cfg.Insecure, "skip TLS verification for self-signed local dev")
 
 	// After flags parse, re-derive the base URLs from --domain; an explicit --insecure still wins
@@ -49,13 +49,13 @@ func NewRootCmd() *cobra.Command {
 	var resolveErr error
 	cobra.OnInitialize(func() {
 		resolveErr = cfg.ApplyDomain(f.Changed("insecure"))
-		// Resolve the active account when the caller pinned neither --account nor ZENTORIS_ACCOUNT:
-		// fall back to the account last selected by `auth switch`, else "default".
-		if !f.Changed("account") && os.Getenv("ZENTORIS_ACCOUNT") == "" {
-			if active := auth.ActiveAccount(); active != "" {
-				cfg.Account = active
+		// Resolve the active profile when the caller pinned neither --profile nor ZENTORIS_PROFILE:
+		// fall back to the profile last selected by `auth switch`, else "default".
+		if !f.Changed("profile") && os.Getenv("ZENTORIS_PROFILE") == "" {
+			if active := auth.ActiveProfile(); active != "" {
+				cfg.Profile = active
 			} else {
-				cfg.Account = "default"
+				cfg.Profile = "default"
 			}
 		}
 	})

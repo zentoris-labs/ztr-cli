@@ -1,4 +1,4 @@
-// Package config carries zentoris's resolved settings: the API endpoints, the active account, TLS
+// Package config carries zentoris's resolved settings: the API endpoints, the active profile, TLS
 // behavior, and the raw credential inputs. Values come from defaults, then environment
 // variables, then persistent flags (flags win). Fields are read lazily by the auth sources and API
 // client, so a flag parsed after construction still takes effect.
@@ -25,7 +25,7 @@ type Config struct {
 	// knob, so there is no split between the two hosts to keep in sync.
 	APIBase  string // Zentoris main API base URL (derived: main.api.<domain>)
 	AuthBase string // Zentoris auth / OP base URL (derived: auth.api.<domain>)
-	Account  string // named account (which stored login executes the action)
+	Profile  string // named profile (which stored login executes the action)
 	Insecure bool   // skip TLS verification (self-signed local dev)
 
 	// Domain is the base host the service URLs are derived from as <svc>.api.<domain>. It defaults
@@ -42,16 +42,16 @@ type Config struct {
 }
 
 // Load builds a Config from a small set of environment variables and built-in defaults. Only the
-// things worth setting once per shell or injecting in CI get an env var: credentials, the account,
+// things worth setting once per shell or injecting in CI get an env var: credentials, the profile,
 // and the endpoint (ZENTORIS_DOMAIN). TLS-skip is flag-only. Base URLs derive from the domain
 // (default the hosted platform).
 func Load() *Config {
 	c := &Config{
 		Domain: envOr("ZENTORIS_DOMAIN", defaultDomain),
-		// Account is left as the raw ZENTORIS_ACCOUNT (possibly empty) here; the command layer
-		// resolves the final value after flags parse (flag > env > active account > "default"),
-		// since the persisted active account lives in internal/auth, which config must not import.
-		Account:      os.Getenv("ZENTORIS_ACCOUNT"),
+		// Profile is left as the raw ZENTORIS_PROFILE (possibly empty) here; the command layer
+		// resolves the final value after flags parse (flag > env > active profile > "default"),
+		// since the persisted active profile lives in internal/auth, which config must not import.
+		Profile:      os.Getenv("ZENTORIS_PROFILE"),
 		Token:        os.Getenv("ZENTORIS_TOKEN"),
 		ClientID:     os.Getenv("ZENTORIS_CLIENT_ID"),
 		ClientSecret: os.Getenv("ZENTORIS_CLIENT_SECRET"),

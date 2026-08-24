@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-func TestWithAccountLockRunsAndPropagates(t *testing.T) {
+func TestWithProfileLockRunsAndPropagates(t *testing.T) {
 	withTempDir(t)
 
 	ran := false
-	if err := withAccountLock("work", func() error { ran = true; return nil }); err != nil {
+	if err := withProfileLock("work", func() error { ran = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if !ran {
@@ -20,12 +20,12 @@ func TestWithAccountLockRunsAndPropagates(t *testing.T) {
 	}
 
 	sentinel := errors.New("boom")
-	if err := withAccountLock("work", func() error { return sentinel }); !errors.Is(err, sentinel) {
+	if err := withProfileLock("work", func() error { return sentinel }); !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want the fn's error propagated", err)
 	}
 }
 
-func TestWithAccountLockSerializes(t *testing.T) {
+func TestWithProfileLockSerializes(t *testing.T) {
 	withTempDir(t)
 
 	var inCritical, overlaps, completed int32
@@ -34,7 +34,7 @@ func TestWithAccountLockSerializes(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = withAccountLock("work", func() error {
+			_ = withProfileLock("work", func() error {
 				if atomic.AddInt32(&inCritical, 1) != 1 {
 					atomic.AddInt32(&overlaps, 1) // another goroutine was inside at the same time
 				}

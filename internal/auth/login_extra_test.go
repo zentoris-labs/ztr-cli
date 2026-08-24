@@ -66,7 +66,7 @@ func TestPersistLoginStoresLabelsAndActivates(t *testing.T) {
 
 	enc := base64.RawURLEncoding.EncodeToString
 	jwt := enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(`{"email":"me@zentoris.test"}`)) + ".sig"
-	if err := persistLogin(&config.Config{Account: "work"},
+	if err := persistLogin(&config.Config{Profile: "work"},
 		&Credentials{AccessToken: jwt, RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestPersistLoginStoresLabelsAndActivates(t *testing.T) {
 	if got.Subject != "me@zentoris.test" {
 		t.Fatalf("subject = %q, want it parsed from the JWT at login", got.Subject)
 	}
-	if ActiveAccount() != "work" {
-		t.Fatalf("active = %q, want work (a fresh login activates its account)", ActiveAccount())
+	if ActiveProfile() != "work" {
+		t.Fatalf("active = %q, want work (a fresh login activates its profile)", ActiveProfile())
 	}
 }

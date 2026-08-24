@@ -42,7 +42,7 @@ func NewLoginSource(cfg *config.Config) *LoginSource {
 func (s *LoginSource) Name() string { return "login" }
 
 func (s *LoginSource) Token(ctx context.Context) (string, error) {
-	creds, err := s.store.Load(s.cfg.Account)
+	creds, err := s.store.Load(s.cfg.Profile)
 	if err != nil || creds == nil || creds.AccessToken == "" {
 		return "", ErrNoCredential
 	}
@@ -56,10 +56,10 @@ func (s *LoginSource) Token(ctx context.Context) (string, error) {
 	}
 
 	var token string
-	lockErr := withAccountLock(s.cfg.Account, func() error {
+	lockErr := withProfileLock(s.cfg.Profile, func() error {
 		// Re-read inside the lock: a concurrent invocation may have refreshed while we waited, in
 		// which case we reuse its result instead of refreshing (and rotating) a second time.
-		if cur, err := s.store.Load(s.cfg.Account); err == nil && cur != nil && !tokenNeedsRefresh(cur) {
+		if cur, err := s.store.Load(s.cfg.Profile); err == nil && cur != nil && !tokenNeedsRefresh(cur) {
 			token = cur.AccessToken
 			return nil
 		}
@@ -71,7 +71,7 @@ func (s *LoginSource) Token(ctx context.Context) (string, error) {
 		if refreshed.Subject = subjectFromToken(refreshed.AccessToken); refreshed.Subject == "" {
 			refreshed.Subject = creds.Subject
 		}
-		if err := s.store.Save(s.cfg.Account, refreshed); err != nil {
+		if err := s.store.Save(s.cfg.Profile, refreshed); err != nil {
 			return err
 		}
 		token = refreshed.AccessToken
@@ -99,7 +99,7 @@ func tokenNeedsRefresh(c *Credentials) bool {
 const loginCallbackTimeout = 3 * time.Minute
 
 // RunInteractiveLogin performs a browser loopback-PKCE sign-in against the Zentoris OP and
-// caches the resulting tokens for the active account. The OP accepts RFC 8252 public clients
+// caches the resulting tokens for the active profile. The OP accepts RFC 8252 public clients
 // (PKCE S256, loopback-any-port), so this needs no client secret and no backend change - it
 // does require the fixed first-party `cli` client (see clientID) provisioned in the tenant.
 func RunInteractiveLogin(ctx context.Context, cfg *config.Config) error {
@@ -220,16 +220,16 @@ func waitForCallback(ctx context.Context, ln net.Listener, state string) (string
 		q := r.URL.Query()
 		switch {
 		case q.Get("error") != "":
-			writeBrowserMsg(w, "Sign-in failed. You can close this tab.")
+			writeBrowserPage(w, false, "Sign-in failed", "Something went wrong during authorization. You can close this tab and try again.")
 			send(result{err: fmt.Errorf("authorization error: %s %s", q.Get("error"), q.Get("error_description"))})
 		case q.Get("state") != state:
-			writeBrowserMsg(w, "Sign-in failed (state mismatch). You can close this tab.")
+			writeBrowserPage(w, false, "Sign-in failed", "The response did not match this sign-in request. You can close this tab and try again.")
 			send(result{err: fmt.Errorf("state mismatch on callback")})
 		case q.Get("code") == "":
-			writeBrowserMsg(w, "Sign-in failed (no code). You can close this tab.")
+			writeBrowserPage(w, false, "Sign-in failed", "No authorization code was returned. You can close this tab and try again.")
 			send(result{err: fmt.Errorf("no authorization code on callback")})
 		default:
-			writeBrowserMsg(w, "Signed in. You can close this tab and return to the terminal.")
+			writeBrowserPage(w, true, "You're signed in", "You can close this tab and return to your terminal.")
 			send(result{code: q.Get("code")})
 		}
 	})}
@@ -245,11 +245,63 @@ func waitForCallback(ctx context.Context, ln net.Listener, state string) (string
 	}
 }
 
-func writeBrowserMsg(w http.ResponseWriter, msg string) {
+// writeBrowserPage renders the loopback callback result as a small, self-contained, theme-aware
+// page (the tab the browser lands on after sign-in). It is served by the CLI's own 127.0.0.1
+// listener, so everything is inlined - no external assets. heading/detail are CLI-controlled
+// literals (never user input), so no escaping is needed.
+func writeBrowserPage(w http.ResponseWriter, ok bool, heading, detail string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Connection", "close")
-	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><body style='font-family:sans-serif;padding:2rem'>%s</body>", msg)
+	accent, icon := "#dc2626", `<path d="M18 6 6 18M6 6l12 12"/>`
+	if ok {
+		accent, icon = "#16a34a", `<path d="M20 6 9 17l-5-5"/>`
+	}
+	page := browserPage
+	for old, new := range map[string]string{
+		"{{ACCENT}}": accent, "{{ICON}}": icon, "{{HEADING}}": heading, "{{DETAIL}}": detail,
+	} {
+		page = strings.ReplaceAll(page, old, new)
+	}
+	_, _ = io.WriteString(w, page)
 }
+
+// browserPage is the loopback callback template: a centered card with a success/error badge and the
+// zentoris wordmark, light/dark aware. Placeholders are filled by writeBrowserPage.
+const browserPage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zentoris CLI</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--text:#12151a;--muted:#667085;--border:#e6e8eb;--accent:{{ACCENT}}}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0c0e11;--card:#15181d;--text:#e8eaed;--muted:#98a1ad;--border:#252a31}
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;padding:24px;
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .card{width:100%;max-width:420px;background:var(--card);border:1px solid var(--border);border-radius:16px;
+        padding:40px 32px;text-align:center;box-shadow:0 10px 34px rgba(0,0,0,.07)}
+  .badge{width:64px;height:64px;margin:0 auto 20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+         background:color-mix(in srgb,var(--accent) 15%,transparent)}
+  .badge svg{width:32px;height:32px;fill:none;stroke:var(--accent);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+  h1{margin:0 0 8px;font-size:20px;font-weight:650}
+  p{margin:0;color:var(--muted)}
+  .brand{margin-top:28px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .brand b{color:var(--text);font-weight:600;letter-spacing:.06em}
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge"><svg viewBox="0 0 24 24" aria-hidden="true">{{ICON}}</svg></div>
+    <h1>{{HEADING}}</h1>
+    <p>{{DETAIL}}</p>
+    <div class="brand"><b>zentoris</b> &middot; CLI</div>
+  </main>
+</body>
+</html>`
 
 // exchangeCode swaps the authorization code for tokens at the discovered token endpoint.
 func exchangeCode(ctx context.Context, cfg *config.Config, endpoint, code, verifier, redirect string) (*Credentials, error) {
@@ -387,17 +439,17 @@ func RunDeviceLogin(ctx context.Context, cfg *config.Config) error {
 }
 
 // persistLogin labels the credentials with the account identity (best-effort), stores them under
-// the active account, and records that account as the active default (a fresh login switches to
+// the active profile, and records that profile as the active default (a fresh login switches to
 // it). Shared by the loopback and device-code flows.
 func persistLogin(cfg *config.Config, creds *Credentials) error {
 	creds.Subject = subjectFromToken(creds.AccessToken)
-	if err := NewStore().Save(cfg.Account, creds); err != nil {
+	if err := NewStore().Save(cfg.Profile, creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	if err := RegisterLogin(cfg.Account); err != nil {
-		return fmt.Errorf("record account: %w", err)
+	if err := RegisterLogin(cfg.Profile); err != nil {
+		return fmt.Errorf("record profile: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for account %q.\n", cfg.Account)
+	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for profile %q.\n", cfg.Profile)
 	return nil
 }
 
