@@ -15,14 +15,15 @@ import (
 	"github.com/zentoris-labs/ztr-cli/internal/config"
 )
 
-// The CLI is Zentoris's own first-party tooling, so its OAuth client id and login scope are FIXED,
-// not user-configurable (mirrors the console's fixed `console` client). Every tenant that enables
-// CLI access provisions a first-party client with this well-known id; the minted $native session is
-// platform-audienced + full-scope regardless of the requested scope, so `loginScope` is a formality
-// the OP needs syntactically. Only the TENANT varies per invocation, never the client.
+// The CLI is Zentoris's own first-party tooling, so its OAuth client id, login scope, and tenant
+// are FIXED, not user-configurable (mirrors the console's fixed `console` client). The first-party
+// client is provisioned with this well-known id; the minted session is platform-audienced and
+// full-scope regardless of the requested scope, so `loginScope` is a formality the OP needs
+// syntactically. Only the deployment (its --domain) varies per invocation, never the client or tenant.
 const (
 	clientID   = "cli"
 	loginScope = "openid profile offline_access"
+	opTenant   = "main" // fixed tenant segment in OP endpoint paths (/tenants/<opTenant>/...)
 )
 
 // LoginSource returns the access token cached by `zentoris auth login`. The interactive ceremony
@@ -40,22 +41,65 @@ func NewLoginSource(cfg *config.Config) *LoginSource {
 
 func (s *LoginSource) Name() string { return "login" }
 
-func (s *LoginSource) Token(context.Context) (string, error) {
-	creds, err := s.store.Load(s.cfg.Profile)
+func (s *LoginSource) Token(ctx context.Context) (string, error) {
+	creds, err := s.store.Load(s.cfg.Account)
 	if err != nil || creds == nil || creds.AccessToken == "" {
 		return "", ErrNoCredential
 	}
-	if !creds.Expiry.IsZero() && time.Now().After(creds.Expiry) {
-		// TODO: use the stored refresh token to renew silently before giving up.
+	if !tokenNeedsRefresh(creds) {
+		return creds.AccessToken, nil
+	}
+	// The access token has expired (or is within the refresh skew). Renew it silently with the
+	// stored refresh token; only if that is missing or rejected do we fall back to a fresh login.
+	if creds.RefreshToken == "" {
 		return "", ErrNoCredential
 	}
-	return creds.AccessToken, nil
+
+	var token string
+	lockErr := withAccountLock(s.cfg.Account, func() error {
+		// Re-read inside the lock: a concurrent invocation may have refreshed while we waited, in
+		// which case we reuse its result instead of refreshing (and rotating) a second time.
+		if cur, err := s.store.Load(s.cfg.Account); err == nil && cur != nil && !tokenNeedsRefresh(cur) {
+			token = cur.AccessToken
+			return nil
+		}
+		refreshed, err := refreshTokens(ctx, s.cfg, creds.RefreshToken)
+		if err != nil {
+			return err
+		}
+		// Keep the identity label if the renewed token does not carry a readable one.
+		if refreshed.Subject = subjectFromToken(refreshed.AccessToken); refreshed.Subject == "" {
+			refreshed.Subject = creds.Subject
+		}
+		if err := s.store.Save(s.cfg.Account, refreshed); err != nil {
+			return err
+		}
+		token = refreshed.AccessToken
+		return nil
+	})
+	if lockErr != nil {
+		// A rejected refresh token (expired/revoked), a lock timeout, or a transient token-endpoint
+		// error all land here: yield no credential so the resolver falls through and, if nothing
+		// else authenticates, the user is told to sign in again.
+		return "", ErrNoCredential
+	}
+	return token, nil
+}
+
+// tokenRefreshSkew renews a login shortly before its access token actually expires, so a token is
+// never handed to the API with only seconds of life left.
+const tokenRefreshSkew = 60 * time.Second
+
+// tokenNeedsRefresh reports whether the stored access token has expired or is within the refresh
+// skew. A zero expiry (unknown lifetime) is treated as still valid - the CLI cannot know better.
+func tokenNeedsRefresh(c *Credentials) bool {
+	return !c.Expiry.IsZero() && time.Now().After(c.Expiry.Add(-tokenRefreshSkew))
 }
 
 const loginCallbackTimeout = 3 * time.Minute
 
 // RunInteractiveLogin performs a browser loopback-PKCE sign-in against the Zentoris OP and
-// caches the resulting tokens for the active profile. The OP accepts RFC 8252 public clients
+// caches the resulting tokens for the active account. The OP accepts RFC 8252 public clients
 // (PKCE S256, loopback-any-port), so this needs no client secret and no backend change - it
 // does require the fixed first-party `cli` client (see clientID) provisioned in the tenant.
 func RunInteractiveLogin(ctx context.Context, cfg *config.Config) error {
@@ -80,7 +124,7 @@ func RunInteractiveLogin(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 
-	authURL := authorizeURL(endpoints.AuthorizationEndpoint, cfg, redirect, challenge, state)
+	authURL := authorizeURL(endpoints.AuthorizationEndpoint, redirect, challenge, state)
 	fmt.Fprintf(os.Stderr, "Opening your browser to sign in.\nIf it does not open, visit:\n\n  %s\n\n", authURL)
 	_ = openBrowser(authURL)
 
@@ -95,11 +139,7 @@ func RunInteractiveLogin(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if err := NewStore().Save(cfg.Profile, creds); err != nil {
-		return fmt.Errorf("save credentials: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for profile %q.\n", cfg.Profile)
-	return nil
+	return persistLogin(cfg, creds)
 }
 
 // oidcConfig is the subset of the OIDC discovery document zentoris needs.
@@ -118,7 +158,7 @@ const deviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 // origin (as it does locally: the login UI is a separate SPA host from the auth API).
 func discover(ctx context.Context, cfg *config.Config) (*oidcConfig, error) {
 	u := fmt.Sprintf("%s/tenants/%s/.well-known/openid-configuration",
-		strings.TrimRight(cfg.AuthBase, "/"), url.PathEscape(cfg.Tenant))
+		strings.TrimRight(cfg.AuthBase, "/"), opTenant)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -144,7 +184,7 @@ func discover(ctx context.Context, cfg *config.Config) (*oidcConfig, error) {
 
 // authorizeURL appends the PKCE authorization-request params to the discovered
 // authorization_endpoint.
-func authorizeURL(endpoint string, cfg *config.Config, redirect, challenge, state string) string {
+func authorizeURL(endpoint, redirect, challenge, state string) string {
 	q := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
@@ -153,9 +193,6 @@ func authorizeURL(endpoint string, cfg *config.Config, redirect, challenge, stat
 		"state":                 {state},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
-	}
-	if cfg.Resource != "" {
-		q.Set("resource", cfg.Resource) // RFC 8707: scope the issued token to the target API
 	}
 	sep := "?"
 	if strings.Contains(endpoint, "?") {
@@ -216,16 +253,42 @@ func writeBrowserMsg(w http.ResponseWriter, msg string) {
 
 // exchangeCode swaps the authorization code for tokens at the discovered token endpoint.
 func exchangeCode(ctx context.Context, cfg *config.Config, endpoint, code, verifier, redirect string) (*Credentials, error) {
-	form := url.Values{
+	return postTokenForm(ctx, cfg, endpoint, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirect},
 		"client_id":     {clientID},
 		"code_verifier": {verifier},
+	})
+}
+
+// refreshTokens renews an expired login by exchanging its stored refresh token for a fresh access
+// token (RFC 6749 refresh_token grant), so the CLI renews silently instead of forcing a new
+// browser sign-in. The OP may or may not rotate the refresh token; the old one is kept if none
+// comes back, so the next renewal still has a token to present.
+func refreshTokens(ctx context.Context, cfg *config.Config, refreshToken string) (*Credentials, error) {
+	endpoints, err := discover(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.Resource != "" {
-		form.Set("resource", cfg.Resource)
+	creds, err := postTokenForm(ctx, cfg, endpoints.TokenEndpoint, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
+		"scope":         {loginScope},
+	})
+	if err != nil {
+		return nil, err
 	}
+	if creds.RefreshToken == "" {
+		creds.RefreshToken = refreshToken
+	}
+	return creds, nil
+}
+
+// postTokenForm POSTs a form-encoded grant to the OP token endpoint and decodes the successful
+// response into Credentials, rendering an OAuth / problem+json error body otherwise.
+func postTokenForm(ctx context.Context, cfg *config.Config, endpoint string, form url.Values) (*Credentials, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -246,7 +309,7 @@ func exchangeCode(ctx context.Context, cfg *config.Config, endpoint, code, verif
 }
 
 // decodeTokenResponse parses a successful OAuth token-endpoint body into Credentials. Shared by
-// the authorization_code exchange and the device-code poll - both mint the same $native session.
+// the authorization_code exchange, the device-code poll, and the refresh-token renewal.
 func decodeTokenResponse(data []byte) (*Credentials, error) {
 	var body struct {
 		AccessToken  string `json:"access_token"`
@@ -283,7 +346,7 @@ type deviceAuthorization struct {
 // RunDeviceLogin performs an RFC 8628 device-authorization sign-in: no local browser or loopback
 // server, so it works over SSH / in containers / on headless boxes. The CLI prints a code + URL,
 // the user approves in any browser (the account app's /device page), and the CLI polls the token
-// endpoint until the approval lands. Mints the SAME $native platform session as the loopback path.
+// endpoint until the approval lands. Mints the SAME platform session as the loopback path.
 func RunDeviceLogin(ctx context.Context, cfg *config.Config) error {
 	endpoints, err := discover(ctx, cfg)
 	if err != nil {
@@ -320,10 +383,21 @@ func RunDeviceLogin(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if err := NewStore().Save(cfg.Profile, creds); err != nil {
+	return persistLogin(cfg, creds)
+}
+
+// persistLogin labels the credentials with the account identity (best-effort), stores them under
+// the active account, and records that account as the active default (a fresh login switches to
+// it). Shared by the loopback and device-code flows.
+func persistLogin(cfg *config.Config, creds *Credentials) error {
+	creds.Subject = subjectFromToken(creds.AccessToken)
+	if err := NewStore().Save(cfg.Account, creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for profile %q.\n", cfg.Profile)
+	if err := RegisterLogin(cfg.Account); err != nil {
+		return fmt.Errorf("record account: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Signed in. Credentials saved for account %q.\n", cfg.Account)
 	return nil
 }
 

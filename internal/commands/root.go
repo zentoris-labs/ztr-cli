@@ -2,6 +2,8 @@
 package commands
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/zentoris-labs/ztr-cli/internal/api"
@@ -33,27 +35,29 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	f := root.PersistentFlags()
-	f.StringVar(&cfg.APIBase, "api", cfg.APIBase, "Zentoris main API base URL")
-	f.StringVar(&cfg.AuthBase, "auth-url", cfg.AuthBase, "Zentoris auth/OP base URL")
-	// Base domain the service URLs derive from (<svc>.api.<domain>). The default reaches the hosted
-	// platform; point it at another deployment's base domain. Hidden: most users override the full
-	// URLs (--api / --auth-url) instead.
+	// Base domain the service URLs derive from (<svc>.api.<domain>). This is the single endpoint
+	// knob: the default reaches the hosted platform; point it at another deployment's base domain.
 	f.StringVar(&cfg.Domain, "domain", cfg.Domain, "base domain for Zentoris service URLs (env ZENTORIS_DOMAIN)")
-	_ = f.MarkHidden("domain")
-	f.StringVar(&cfg.Tenant, "tenant", cfg.Tenant, "tenant id for token endpoints")
 	f.StringVar(&cfg.Token, "token", cfg.Token, "explicit bearer token or PAT (env ZENTORIS_TOKEN)")
-	f.StringVarP(&cfg.Output, "output", "o", cfg.Output, "output format: table|json")
-	f.StringVar(&cfg.Profile, "profile", cfg.Profile, "named credential profile (env ZENTORIS_PROFILE)")
+	f.StringVar(&cfg.Account, "account", cfg.Account, "named account / login to act as (env ZENTORIS_ACCOUNT)")
 	f.BoolVar(&cfg.Insecure, "insecure", cfg.Insecure, "skip TLS verification for self-signed local dev")
-	f.StringVar(&cfg.Resource, "resource", cfg.Resource, "RFC 8707 resource indicator / target API audience")
 
-	// After flags parse, re-derive the base URLs from --domain unless a URL was pinned directly
-	// (an explicit --api/--auth-url/--insecure flag always wins). This runs in OnInitialize, which
-	// cobra invokes for the executed command regardless of any subcommand's own PersistentPreRunE,
-	// so domain resolution can never be silently shadowed; the root hook surfaces its error.
+	// After flags parse, re-derive the base URLs from --domain; an explicit --insecure still wins
+	// over the derived TLS default. This runs in OnInitialize, which cobra invokes for the executed
+	// command regardless of any subcommand's own PersistentPreRunE, so domain resolution can never
+	// be silently shadowed; the root hook surfaces its error.
 	var resolveErr error
 	cobra.OnInitialize(func() {
-		resolveErr = cfg.ApplyDomain(f.Changed("api"), f.Changed("auth-url"), f.Changed("insecure"))
+		resolveErr = cfg.ApplyDomain(f.Changed("insecure"))
+		// Resolve the active account when the caller pinned neither --account nor ZENTORIS_ACCOUNT:
+		// fall back to the account last selected by `auth switch`, else "default".
+		if !f.Changed("account") && os.Getenv("ZENTORIS_ACCOUNT") == "" {
+			if active := auth.ActiveAccount(); active != "" {
+				cfg.Account = active
+			} else {
+				cfg.Account = "default"
+			}
+		}
 	})
 	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
 		return resolveErr

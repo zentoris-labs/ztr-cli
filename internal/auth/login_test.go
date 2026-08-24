@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,8 +15,78 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zalando/go-keyring"
+
 	"github.com/zentoris-labs/ztr-cli/internal/config"
 )
+
+func TestLoginSourceSilentlyRefreshes(t *testing.T) {
+	keyring.MockInit()
+	withTempDir(t)
+
+	var refreshCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tenants/main/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"authorization_endpoint":%q,"token_endpoint":%q}`, base+"/authorize", base+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.FormValue("grant_type") != "refresh_token" || r.FormValue("refresh_token") != "rt-1" {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":"invalid_grant"}`)
+			return
+		}
+		atomic.AddInt32(&refreshCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"access_token":"at-new","refresh_token":"rt-2","expires_in":3600}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := &config.Config{AuthBase: srv.URL, Account: "work"}
+	store := NewStore()
+	// An already-expired access token, but with a valid refresh token to renew from.
+	if err := store.Save("work", &Credentials{AccessToken: "at-old", RefreshToken: "rt-1", Expiry: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	src := NewLoginSource(cfg)
+	tok, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if tok != "at-new" {
+		t.Fatalf("token = %q, want at-new (silently refreshed)", tok)
+	}
+	// The rotated credentials must be persisted so the next command reuses them.
+	got, _ := store.Load("work")
+	if got == nil || got.AccessToken != "at-new" || got.RefreshToken != "rt-2" {
+		t.Fatalf("persisted creds = %+v, want at-new/rt-2", got)
+	}
+
+	// A second call now finds a valid token and must NOT refresh again.
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(&refreshCalls); n != 1 {
+		t.Fatalf("refresh called %d times, want exactly 1", n)
+	}
+}
+
+func TestLoginSourceExpiredNoRefreshToken(t *testing.T) {
+	keyring.MockInit()
+	withTempDir(t)
+
+	cfg := &config.Config{Account: "work"}
+	if err := NewStore().Save("work", &Credentials{AccessToken: "at-old", Expiry: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewLoginSource(cfg).Token(context.Background()); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("expired token with no refresh token: err = %v, want ErrNoCredential", err)
+	}
+}
 
 func TestNewPKCE(t *testing.T) {
 	v, c, err := newPKCE()
@@ -35,11 +106,7 @@ func TestNewPKCE(t *testing.T) {
 }
 
 func TestAuthorizeURL(t *testing.T) {
-	cfg := &config.Config{
-		AuthBase: "http://auth.test",
-		Tenant:   "system",
-	}
-	got := authorizeURL("https://login.test/web/auth/authorize", cfg, "http://127.0.0.1:5555/callback", "chal", "st")
+	got := authorizeURL("https://login.test/web/auth/authorize", "http://127.0.0.1:5555/callback", "chal", "st")
 	for _, want := range []string{
 		"https://login.test/web/auth/authorize?",
 		"response_type=code",

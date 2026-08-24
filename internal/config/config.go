@@ -1,8 +1,7 @@
-// Package config carries zentoris's resolved settings: API endpoints, the active tenant and
-// profile, the output format, TLS behavior, and the raw credential inputs. Values come from
-// defaults, then environment variables, then persistent flags (flags win). Fields are read
-// lazily by the auth sources and API client, so a flag parsed after construction still takes
-// effect.
+// Package config carries zentoris's resolved settings: the API endpoints, the active account, TLS
+// behavior, and the raw credential inputs. Values come from defaults, then environment
+// variables, then persistent flags (flags win). Fields are read lazily by the auth sources and API
+// client, so a flag parsed after construction still takes effect.
 package config
 
 import (
@@ -21,22 +20,20 @@ const defaultDomain = "zentoris.com"
 
 // Config is the single settings struct threaded through the command tree.
 type Config struct {
-	APIBase  string // Zentoris main API base URL
-	AuthBase string // Zentoris auth / OP base URL
-	Tenant   string // tenant id used in OP token-endpoint paths
-	Output   string // "table" | "json"
-	Profile  string // named credential profile
+	// APIBase / AuthBase are the resolved service base URLs the API client and auth sources read.
+	// They are derived from Domain (see below), never set directly - Domain is the single endpoint
+	// knob, so there is no split between the two hosts to keep in sync.
+	APIBase  string // Zentoris main API base URL (derived: main.api.<domain>)
+	AuthBase string // Zentoris auth / OP base URL (derived: auth.api.<domain>)
+	Account  string // named account (which stored login executes the action)
 	Insecure bool   // skip TLS verification (self-signed local dev)
 
 	// Domain is the base host the service URLs are derived from as <svc>.api.<domain>. It defaults
-	// to the hosted platform; pass another base domain to reach a different deployment. Explicit
-	// APIBase / AuthBase always win over what Domain would derive.
+	// to the hosted platform; pass another base domain (--domain / ZENTORIS_DOMAIN) to reach a
+	// different deployment. Domain is the ONLY knob that selects a deployment: the CLI's OAuth
+	// client id, login scope, and tenant are fixed first-party constants in internal/auth (this is
+	// Zentoris's own first-party tooling, like the console's fixed `console` client), not settings.
 	Domain string
-
-	// NOTE: the CLI's OAuth client id and login scope are NOT configurable - they are fixed
-	// constants in internal/auth (this is Zentoris's own first-party tooling, like the console's
-	// fixed `console` client). Only the TENANT (whose data) varies, never the client (which tool).
-	Resource string // ZENTORIS_RESOURCE: RFC 8707 resource indicator (the target API audience)
 
 	// Credential inputs, empty means "not provided".
 	Token        string // raw bearer or apt_ PAT: --token / ZENTORIS_TOKEN
@@ -45,47 +42,42 @@ type Config struct {
 }
 
 // Load builds a Config from a small set of environment variables and built-in defaults. Only the
-// things worth setting once per shell or injecting in CI get an env var: credentials, the profile,
-// and the endpoint (ZENTORIS_DOMAIN). Preferences like tenant, output, TLS-skip, and the resource
-// audience are flag-only. Base URLs derive from the domain (default the hosted platform).
+// things worth setting once per shell or injecting in CI get an env var: credentials, the account,
+// and the endpoint (ZENTORIS_DOMAIN). TLS-skip is flag-only. Base URLs derive from the domain
+// (default the hosted platform).
 func Load() *Config {
 	c := &Config{
-		Domain:       envOr("ZENTORIS_DOMAIN", defaultDomain),
-		Tenant:       "main",
-		Output:       "table",
-		Profile:      envOr("ZENTORIS_PROFILE", "default"),
+		Domain: envOr("ZENTORIS_DOMAIN", defaultDomain),
+		// Account is left as the raw ZENTORIS_ACCOUNT (possibly empty) here; the command layer
+		// resolves the final value after flags parse (flag > env > active account > "default"),
+		// since the persisted active account lives in internal/auth, which config must not import.
+		Account:      os.Getenv("ZENTORIS_ACCOUNT"),
 		Token:        os.Getenv("ZENTORIS_TOKEN"),
 		ClientID:     os.Getenv("ZENTORIS_CLIENT_ID"),
 		ClientSecret: os.Getenv("ZENTORIS_CLIENT_SECRET"),
 	}
 	// deriveFromDomain is the single place APIBase/AuthBase/Insecure are computed; ApplyDomain
 	// (the CLI path) validates first and reruns it, but a bare Load() must still be usable.
-	c.deriveFromDomain(false, false, false)
+	c.deriveFromDomain(false)
 	return c
 }
 
 // ApplyDomain validates c.Domain and re-derives the service base URLs (and the self-signed-dev
-// TLS default) from it, skipping any value the operator pinned directly. It runs after flag
-// parsing so a --domain flag composes correctly with the environment defaults resolved in Load:
-// explicit --api / --auth-url / --insecure always win. Returns an error for a malformed domain.
-func (c *Config) ApplyDomain(explicitAPI, explicitAuth, explicitInsecure bool) error {
+// TLS default) from it. It runs after flag parsing so a --domain flag composes correctly with the
+// environment defaults resolved in Load: an explicit --insecure always wins over the derived TLS
+// default. Returns an error for a malformed domain.
+func (c *Config) ApplyDomain(explicitInsecure bool) error {
 	if err := validateDomain(c.Domain); err != nil {
 		return err
 	}
-	c.deriveFromDomain(explicitAPI, explicitAuth, explicitInsecure)
+	c.deriveFromDomain(explicitInsecure)
 	return nil
 }
 
-// deriveFromDomain sets APIBase / AuthBase / Insecure from c.Domain, leaving any field the caller
-// marked as explicitly pinned untouched.
-func (c *Config) deriveFromDomain(explicitAPI, explicitAuth, explicitInsecure bool) {
-	apiBase, authBase := endpointsFor(c.Domain)
-	if !explicitAPI {
-		c.APIBase = apiBase
-	}
-	if !explicitAuth {
-		c.AuthBase = authBase
-	}
+// deriveFromDomain sets APIBase / AuthBase / Insecure from c.Domain. The base URLs are always
+// derived; only Insecure yields to an explicitly-set --insecure flag.
+func (c *Config) deriveFromDomain(explicitInsecure bool) {
+	c.APIBase, c.AuthBase = endpointsFor(c.Domain)
 	if !explicitInsecure {
 		c.Insecure = isLocalDomain(c.Domain)
 	}

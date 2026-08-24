@@ -10,7 +10,7 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// Credentials is what `zentoris auth login` caches per profile. The secret material (access + refresh
+// Credentials is what `zentoris auth login` caches per account. The secret material (access + refresh
 // tokens) is stored in the OS keychain when one is available, and in a 0600 file otherwise - see
 // Store. The struct itself is the JSON payload for both backends.
 type Credentials struct {
@@ -24,40 +24,44 @@ type Credentials struct {
 // user sees in Keychain Access / Credential Manager, so it names the tool, not the OAuth client).
 const keyringService = "zentoris"
 
-// Store persists per-profile credentials. It prefers the OS keychain (macOS Keychain, Windows
+// Store persists per-account credentials. It prefers the OS keychain (macOS Keychain, Windows
 // Credential Manager, Linux Secret Service via zalando/go-keyring) and falls back to a 0600 file
 // under the user config dir on headless boxes where no keychain backend is reachable - the gh
-// model. One source of truth per profile: a successful keychain write removes any stale file.
+// model. One source of truth per account: a successful keychain write removes any stale file.
 type Store struct{ dir string }
 
-// NewStore locates the file-fallback directory (XDG config dir, falling back to home).
-func NewStore() *Store {
-	base, err := os.UserConfigDir()
-	if err != nil || base == "" {
-		home, _ := os.UserHomeDir()
-		base = home
+// zentorisDir resolves the per-user directory for zentoris state: the credential-file fallback and
+// the account index (config.json). It is ~/.zentoris (a dotfolder in the home directory, like
+// ~/.aws or ~/.kube). A package var so tests can point it at a temp dir.
+var zentorisDir = func() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "." // last resort: a .zentoris dir under the working directory
 	}
-	return &Store{dir: filepath.Join(base, "zentoris")}
+	return filepath.Join(home, ".zentoris")
 }
 
-func normProfile(profile string) string {
-	if profile == "" {
+// NewStore locates the file-fallback directory (XDG config dir, falling back to home).
+func NewStore() *Store { return &Store{dir: zentorisDir()} }
+
+func normAccount(account string) string {
+	if account == "" {
 		return "default"
 	}
-	return profile
+	return account
 }
 
-func keyringUser(profile string) string { return "credentials-" + normProfile(profile) }
+func keyringUser(account string) string { return "credentials-" + normAccount(account) }
 
-func (s *Store) path(profile string) string {
-	return filepath.Join(s.dir, "credentials-"+normProfile(profile)+".json")
+func (s *Store) path(account string) string {
+	return filepath.Join(s.dir, "credentials-"+normAccount(account)+".json")
 }
 
-// Load returns the stored credentials for a profile, or (nil, nil) when none exist. Reads the
+// Load returns the stored credentials for an account, or (nil, nil) when none exist. Reads the
 // keychain first, then the file - so creds written on a headless box (or by an older file-only
 // build) are still found, and a keychain that is present but empty falls through to the file.
-func (s *Store) Load(profile string) (*Credentials, error) {
-	if v, err := keyring.Get(keyringService, keyringUser(profile)); err == nil {
+func (s *Store) Load(account string) (*Credentials, error) {
+	if v, err := keyring.Get(keyringService, keyringUser(account)); err == nil {
 		var c Credentials
 		if err := json.Unmarshal([]byte(v), &c); err != nil {
 			return nil, err
@@ -65,7 +69,7 @@ func (s *Store) Load(profile string) (*Credentials, error) {
 		return &c, nil
 	}
 	// Keychain miss (ErrNotFound) or unavailable backend both fall through to the file fallback.
-	b, err := os.ReadFile(s.path(profile))
+	b, err := os.ReadFile(s.path(account))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -79,16 +83,16 @@ func (s *Store) Load(profile string) (*Credentials, error) {
 	return &c, nil
 }
 
-// Save writes credentials for a profile. Prefers the keychain; on any keychain error (no backend,
+// Save writes credentials for an account. Prefers the keychain; on any keychain error (no backend,
 // as on a headless Linux host) it writes a 0600 file instead. A keychain success clears any stale
 // file so the two backends never disagree.
-func (s *Store) Save(profile string, c *Credentials) error {
+func (s *Store) Save(account string, c *Credentials) error {
 	blob, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	if err := keyring.Set(keyringService, keyringUser(profile), string(blob)); err == nil {
-		_ = os.Remove(s.path(profile)) // one source of truth: drop the file the fallback may have left
+	if err := keyring.Set(keyringService, keyringUser(account), string(blob)); err == nil {
+		_ = os.Remove(s.path(account)) // one source of truth: drop the file the fallback may have left
 		return nil
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
@@ -98,29 +102,29 @@ func (s *Store) Save(profile string, c *Credentials) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(profile), pretty, 0o600)
+	return os.WriteFile(s.path(account), pretty, 0o600)
 }
 
-// Clear removes a profile's stored credentials from BOTH backends; a missing entry is not an error.
-func (s *Store) Clear(profile string) error {
-	if err := keyring.Delete(keyringService, keyringUser(profile)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+// Clear removes an account's stored credentials from BOTH backends; a missing entry is not an error.
+func (s *Store) Clear(account string) error {
+	if err := keyring.Delete(keyringService, keyringUser(account)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		// A missing entry or an unavailable keychain is fine; only a real delete failure matters, and
 		// even then we still try to remove the file so logout is not left half-done.
 		_ = err
 	}
-	if err := os.Remove(s.path(profile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(s.path(account)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
-// Backend reports where a profile's credentials currently live: "keychain", "file", or "none".
+// Backend reports where an account's credentials currently live: "keychain", "file", or "none".
 // Used by `zentoris auth status` so the user knows whether their token sits in the OS keychain or a file.
-func (s *Store) Backend(profile string) string {
-	if _, err := keyring.Get(keyringService, keyringUser(profile)); err == nil {
+func (s *Store) Backend(account string) string {
+	if _, err := keyring.Get(keyringService, keyringUser(account)); err == nil {
 		return "keychain"
 	}
-	if _, err := os.Stat(s.path(profile)); err == nil {
+	if _, err := os.Stat(s.path(account)); err == nil {
 		return "file"
 	}
 	return "none"

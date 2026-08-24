@@ -46,14 +46,11 @@ func (s *ClientCredentialsSource) Token(ctx context.Context) (string, error) {
 	}
 
 	endpoint := fmt.Sprintf("%s/tenants/%s/oauth2/token",
-		strings.TrimRight(s.cfg.AuthBase, "/"), url.PathEscape(s.cfg.Tenant))
+		strings.TrimRight(s.cfg.AuthBase, "/"), opTenant)
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {s.cfg.ClientID},
 		"client_secret": {s.cfg.ClientSecret},
-	}
-	if s.cfg.Resource != "" {
-		form.Set("resource", s.cfg.Resource) // RFC 8707: the OP requires it to pick the audience
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {

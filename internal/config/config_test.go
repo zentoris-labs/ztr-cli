@@ -34,7 +34,7 @@ func TestIsLocalDomain(t *testing.T) {
 
 func TestApplyDomainDerivesBothURLs(t *testing.T) {
 	c := &Config{Domain: "internal.zentoris.com"}
-	if err := c.ApplyDomain(false, false, false); err != nil {
+	if err := c.ApplyDomain(false); err != nil {
 		t.Fatalf("ApplyDomain: %v", err)
 	}
 	if c.APIBase != "https://main.api.internal.zentoris.com" {
@@ -45,22 +45,24 @@ func TestApplyDomainDerivesBothURLs(t *testing.T) {
 	}
 }
 
-func TestApplyDomainKeepsExplicitURL(t *testing.T) {
-	c := &Config{Domain: "internal.zentoris.com", APIBase: "https://custom.example"}
-	if err := c.ApplyDomain(true /* explicitAPI */, false, false); err != nil {
+func TestApplyDomainAlwaysDerivesURLs(t *testing.T) {
+	// The base URLs are purely derived from Domain - there is no direct override, so a stale
+	// APIBase left on the struct is replaced, not preserved.
+	c := &Config{Domain: "internal.zentoris.com", APIBase: "https://stale.example"}
+	if err := c.ApplyDomain(false); err != nil {
 		t.Fatalf("ApplyDomain: %v", err)
 	}
-	if c.APIBase != "https://custom.example" {
-		t.Errorf("explicit APIBase overwritten: %q", c.APIBase)
+	if c.APIBase != "https://main.api.internal.zentoris.com" {
+		t.Errorf("APIBase should always derive from Domain: %q", c.APIBase)
 	}
 	if c.AuthBase != "https://auth.api.internal.zentoris.com" {
-		t.Errorf("AuthBase should still derive: %q", c.AuthBase)
+		t.Errorf("AuthBase should always derive from Domain: %q", c.AuthBase)
 	}
 }
 
 func TestApplyDomainLocalDefaultsInsecure(t *testing.T) {
 	c := &Config{Domain: "local-01.zentoris.com"}
-	if err := c.ApplyDomain(false, false, false); err != nil {
+	if err := c.ApplyDomain(false); err != nil {
 		t.Fatalf("ApplyDomain: %v", err)
 	}
 	if !c.Insecure {
@@ -69,7 +71,7 @@ func TestApplyDomainLocalDefaultsInsecure(t *testing.T) {
 
 	// An explicit insecure choice is preserved rather than being recomputed.
 	c = &Config{Domain: "zentoris.com", Insecure: true}
-	if err := c.ApplyDomain(false, false, true /* explicitInsecure */); err != nil {
+	if err := c.ApplyDomain(true /* explicitInsecure */); err != nil {
 		t.Fatalf("ApplyDomain: %v", err)
 	}
 	if !c.Insecure {
@@ -80,16 +82,14 @@ func TestApplyDomainLocalDefaultsInsecure(t *testing.T) {
 func TestApplyDomainRejectsMalformed(t *testing.T) {
 	for _, bad := range []string{"https://foo.com", "foo.com/bar", "foo.com:8443", "has space", ""} {
 		c := &Config{Domain: bad}
-		if err := c.ApplyDomain(false, false, false); err == nil {
+		if err := c.ApplyDomain(false); err == nil {
 			t.Errorf("ApplyDomain(domain=%q) = nil error, want a validation error", bad)
 		}
 	}
 }
 
 func TestLoadDefaultsToHostedPlatform(t *testing.T) {
-	for _, k := range []string{"ZENTORIS_DOMAIN", "ZENTORIS_API", "ZENTORIS_AUTH", "ZENTORIS_INSECURE"} {
-		t.Setenv(k, "")
-	}
+	t.Setenv("ZENTORIS_DOMAIN", "")
 	cfg := Load()
 	if cfg.APIBase != "https://main.api.zentoris.com" || cfg.AuthBase != "https://auth.api.zentoris.com" {
 		t.Errorf("hosted defaults wrong: api=%q auth=%q", cfg.APIBase, cfg.AuthBase)
@@ -100,9 +100,6 @@ func TestLoadDefaultsToHostedPlatform(t *testing.T) {
 }
 
 func TestLoadDomainEnvDerivesURLs(t *testing.T) {
-	t.Setenv("ZENTORIS_API", "")
-	t.Setenv("ZENTORIS_AUTH", "")
-	t.Setenv("ZENTORIS_INSECURE", "")
 	t.Setenv("ZENTORIS_DOMAIN", "local.zentoris.com")
 	cfg := Load()
 	if cfg.APIBase != "https://main.api.local.zentoris.com" {

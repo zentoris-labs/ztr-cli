@@ -8,7 +8,7 @@ import (
 
 // IsHeadless reports whether this looks like a box with no local browser to drive a loopback
 // sign-in: an SSH session, or a Linux/BSD host with no X11 / Wayland display. macOS and Windows
-// are assumed to have a usable GUI session. Used to auto-pick the device flow (D7); `--device`
+// are assumed to have a usable GUI session. Used to auto-pick the device flow; `--use-device-code`
 // forces it regardless.
 func IsHeadless() bool {
 	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {

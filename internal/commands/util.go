@@ -21,8 +21,7 @@ func parseKV(pairs []string) (map[string]string, error) {
 	return out, nil
 }
 
-// render prints v as indented JSON. The wireframe emits JSON only; a "table" formatter that
-// honors --output is a TODO.
+// render prints v as indented JSON.
 func render(cmd *cobra.Command, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

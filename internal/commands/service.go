@@ -56,8 +56,7 @@ func newServiceUpdateCmd(d *deps) *cobra.Command {
 		Long: "Update one or more service variables and, with --release, cut a new immutable\n" +
 			"release that pins the current variable state. Built for CI, e.g.:\n\n" +
 			"  zentoris service update svc_123 --set COMMIT_ID=$GITHUB_SHA --release\n\n" +
-			"Authenticates with any configured credential source (see `zentoris auth status`).\n" +
-			"NOTE: the API paths used here are provisional wireframe assumptions.",
+			"Authenticates with any configured credential source (see `zentoris auth status`).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			id := args[0]
@@ -70,7 +69,7 @@ func newServiceUpdateCmd(d *deps) *cobra.Command {
 			if dryRun {
 				fmt.Fprintln(c.OutOrStdout(), "DRY RUN")
 				if len(vars) > 0 {
-					fmt.Fprintf(c.OutOrStdout(), "  PATCH /services/%s  If-Match: %s\n    %v\n", id, orStar(ifMatch), vars)
+					fmt.Fprintf(c.OutOrStdout(), "  PATCH /services/%s  If-Match: %s\n    %v\n", id, ifMatchOrNone(ifMatch), vars)
 				}
 				if release {
 					fmt.Fprintf(c.OutOrStdout(), "  POST  /services/%s/releases\n", id)
@@ -79,7 +78,7 @@ func newServiceUpdateCmd(d *deps) *cobra.Command {
 			}
 
 			if len(vars) > 0 {
-				if err := d.api.Do(c.Context(), http.MethodPatch, "/services/"+id, patch, orStar(ifMatch), nil); err != nil {
+				if err := d.api.Do(c.Context(), http.MethodPatch, "/services/"+id, patch, ifMatch, nil); err != nil {
 					return err
 				}
 				fmt.Fprintf(c.OutOrStdout(), "Updated %d variable(s) on service %s.\n", len(vars), id)
@@ -96,15 +95,15 @@ func newServiceUpdateCmd(d *deps) *cobra.Command {
 	}
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "set a variable, KEY=VALUE (repeatable)")
 	cmd.Flags().BoolVar(&release, "release", false, "cut a new release after applying variables")
-	cmd.Flags().StringVar(&ifMatch, "if-match", "", "optimistic-concurrency ETag; * forces overwrite (wireframe default)")
+	cmd.Flags().StringVar(&ifMatch, "if-match", "", "If-Match ETag for optimistic concurrency; pass '*' to overwrite unconditionally (default: no precondition)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the requests instead of sending them")
 	return cmd
 }
 
-// orStar defaults an empty If-Match to the force-overwrite sentinel for the wireframe.
-func orStar(ifMatch string) string {
+// ifMatchOrNone labels an empty If-Match for dry-run output; an empty value sends no precondition.
+func ifMatchOrNone(ifMatch string) string {
 	if ifMatch == "" {
-		return "*"
+		return "(none)"
 	}
 	return ifMatch
 }
