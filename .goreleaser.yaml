@@ -50,10 +50,6 @@ signs:
     certificate: "${artifact}.pem"
     args:
       - sign-blob
-      # Keep the detached .sig + .pem outputs (matching the verify command above). Recent cosign
-      # defaults to the new single-file bundle format, which ignores --output-* and expects
-      # --bundle; opt out so signing produces the two artifacts GoReleaser uploads.
-      - "--new-bundle-format=false"
       - "--output-certificate=${certificate}"
       - "--output-signature=${signature}"
       - "${artifact}"
