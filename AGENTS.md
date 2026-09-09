@@ -38,7 +38,8 @@ internal/
   api/             HTTP client against the platform API
   auth/            credential sources (token, login, client-credentials, federation),
                    PKCE + loopback, RFC 8628 device flow, keychain/file storage
-  commands/        cobra command tree (auth, service, release, version)
+  catalog/         parsing a committed service-definition catalog: order, references, images
+  commands/        cobra command tree (auth, service, version)
   config/          settings resolution (defaults < env < flags)
 ```
 

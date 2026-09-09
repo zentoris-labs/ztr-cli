@@ -137,20 +137,38 @@ zentoris
     switch <profile>      set the active profile used when --profile is not given
     print-access-token    print the resolved bearer (for scripting)
   service
-    list
-    get <service-id>
-    update <service-id> --set KEY=VALUE ... [--release] [--dry-run]
-  release
-    create --service <id> [--commit <sha>]
-    list   --service <id>
+    list    --org <organization-id>
+    get     <service-id>
+    publish --file <catalog> --org <organization-id> [--var KEY=VALUE ...] [--track v1] [--dry-run]
   version
 ```
 
-Typical CI flow:
+Typical CI flow, after the images for this commit are pushed:
 
 ```bash
-zentoris service update svc_123 --set COMMIT_ID=$GITHUB_SHA --release
+zentoris service publish -f infra/zentoris-catalog.json --org "$ZENTORIS_ORG" --var "commit=$GITHUB_SHA"
 ```
+
+`service publish` reads a catalog file that lists services by NAME, so the same committed file
+publishes to any deployment:
+
+```jsonc
+{
+  "services": [
+    { "name": "my-api", "definition": { "schemaVersion": 1, "components": [ /* ... */ ] } },
+    { "name": "my-app", "definition": { "schemaVersion": 1, "components": [
+      // A ${serviceId:Name} / ${versionId:Name} reference points at another service in the same
+      // file; publishing resolves it to what this run just created, so nothing pins an id by hand.
+      { "id": "api", "variants": [{ "type": "service", "serviceId": "${serviceId:my-api}", "versionId": "${versionId:my-api}" }] }
+    ] } }
+  ]
+}
+```
+
+Each service must already exist in the organization - publishing never creates one. Services publish
+leaf-first, so a referenced service always has its new version before the service referencing it.
+Container images are resolved to digests before publishing, which is why the image field may carry a
+`${commit}` placeholder that `--var commit=...` fills.
 
 ## Building from source
 
@@ -172,9 +190,10 @@ go test ./...
 ## Status
 
 `auth` (all four sources; OIDC federation acquires the token but its exchange step is not
-yet wired), `service`, and `release` are usable. An expired login is renewed silently from its
-refresh token before each command, so you sign in once and only re-authenticate when the refresh
-token itself expires or is revoked. Issues and pull requests are welcome.
+yet wired) and `service` (list / get / publish) are usable. An expired login is
+renewed silently from its refresh token before each command, so you sign in once and only
+re-authenticate when the refresh token itself expires or is revoked. Issues and pull requests are
+welcome.
 
 ## License
 

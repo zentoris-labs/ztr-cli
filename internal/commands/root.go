@@ -28,8 +28,8 @@ func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "zentoris",
 		Short: "Zentoris platform CLI",
-		Long: "zentoris drives the Zentoris platform API: update services, cut releases, and manage\n" +
-			"auth from your terminal or CI pipeline.",
+		Long: "zentoris drives the Zentoris platform API: publish service definitions and manage auth\n" +
+			"from your terminal or CI pipeline.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -73,7 +73,6 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(
 		newAuthCmd(d),
 		newServiceCmd(d),
-		newReleaseCmd(d),
 		newVersionCmd(),
 	)
 	return root

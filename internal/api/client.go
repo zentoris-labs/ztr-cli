@@ -17,6 +17,9 @@ import (
 	"github.com/zentoris-labs/ztr-cli/internal/config"
 )
 
+// apiPrefix is the path every Zentoris main REST route sits under.
+const apiPrefix = "/api"
+
 // Client calls the Zentoris main API.
 type Client struct {
 	cfg      *config.Config
@@ -45,7 +48,9 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, ifMatch 
 		rdr = bytes.NewReader(b)
 	}
 
-	base := strings.TrimRight(c.cfg.APIBase, "/")
+	// The platform serves its REST API under /api on the main host, so the client owns that prefix
+	// and every caller passes the resource path alone ("/services", not "/api/services").
+	base := strings.TrimRight(c.cfg.APIBase, "/") + apiPrefix
 	req, err := http.NewRequestWithContext(ctx, method, base+path, rdr)
 	if err != nil {
 		return err

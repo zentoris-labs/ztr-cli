@@ -38,14 +38,30 @@ func run1(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// runSplit keeps the streams apart: a multi-step command writes progress to stderr so stdout stays
+// a single JSON document a pipeline can parse.
+func runSplit(t *testing.T, cmd *cobra.Command, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+	return out.String(), errBuf.String(), err
+}
+
 func TestServiceListSuccess(t *testing.T) {
 	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/services" {
-			t.Errorf("got %s %s, want GET /services", r.Method, r.URL.Path)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/services" {
+			t.Errorf("got %s %s, want GET /api/services", r.Method, r.URL.Path)
 		}
-		io.WriteString(w, `[{"id":"svc_1"}]`)
+		if got := r.URL.Query().Get("organizationId"); got != "org_1" {
+			t.Errorf("organizationId = %q, want org_1", got)
+		}
+		io.WriteString(w, `{"items":[{"id":"svc_1"}]}`)
 	})
-	out, err := run1(t, newServiceListCmd(d))
+	out, err := run1(t, newServiceListCmd(d), "--org", "org_1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +72,8 @@ func TestServiceListSuccess(t *testing.T) {
 
 func TestServiceGetSuccess(t *testing.T) {
 	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/services/svc_9" {
-			t.Errorf("path = %q, want /services/svc_9", r.URL.Path)
+		if r.URL.Path != "/api/services/svc_9" {
+			t.Errorf("path = %q, want /api/services/svc_9", r.URL.Path)
 		}
 		io.WriteString(w, `{"id":"svc_9","name":"api"}`)
 	})
@@ -66,64 +82,6 @@ func TestServiceGetSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "svc_9") || !strings.Contains(out, "api") {
-		t.Fatalf("output %q", out)
-	}
-}
-
-func TestServiceUpdateSendsPatch(t *testing.T) {
-	var gotBody, gotIfMatch, gotMethod string
-	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotIfMatch = r.Method, r.Header.Get("If-Match")
-		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
-		io.WriteString(w, `{}`)
-	})
-	out, err := run1(t, newServiceUpdateCmd(d), "svc_1", "--set", "A=B", "--if-match", "v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotMethod != http.MethodPatch {
-		t.Errorf("method = %q, want PATCH", gotMethod)
-	}
-	if gotIfMatch != "v1" {
-		t.Errorf("If-Match = %q, want v1 (forwarded from --if-match)", gotIfMatch)
-	}
-	if !strings.Contains(gotBody, `"variables"`) || !strings.Contains(gotBody, `"A":"B"`) {
-		t.Errorf("request body %q, want the variables patch", gotBody)
-	}
-	if !strings.Contains(out, "Updated 1 variable(s) on service svc_1") {
-		t.Fatalf("output %q", out)
-	}
-}
-
-func TestReleaseCreateSuccess(t *testing.T) {
-	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/services/svc_1/releases" {
-			t.Errorf("got %s %s", r.Method, r.URL.Path)
-		}
-		io.WriteString(w, `{"id":"rel_1"}`)
-	})
-	out, err := run1(t, newReleaseCreateCmd(d), "--service", "svc_1", "--commit", "abc123")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "rel_1") {
-		t.Fatalf("output %q, want the created release id", out)
-	}
-}
-
-func TestReleaseListSuccess(t *testing.T) {
-	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/services/svc_1/releases" {
-			t.Errorf("path = %q", r.URL.Path)
-		}
-		io.WriteString(w, `[{"id":"rel_1"}]`)
-	})
-	out, err := run1(t, newReleaseListCmd(d), "--service", "svc_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "rel_1") {
 		t.Fatalf("output %q", out)
 	}
 }

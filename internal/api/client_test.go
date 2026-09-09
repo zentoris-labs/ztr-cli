@@ -52,7 +52,7 @@ func TestDoSuccessSendsHeadersAndBody(t *testing.T) {
 		"Content-Type":  {gotCT, "application/json"},
 		"If-Match":      {gotIfMatch, "etag-1"},
 		"method":        {gotMethod, http.MethodPatch},
-		"path":          {gotPath, "/services/svc_1"},
+		"path":          {gotPath, "/api/services/svc_1"},
 		"body":          {strings.TrimSpace(gotBody), `{"k":"v"}`},
 	}
 	for name, c := range checks {
@@ -96,8 +96,8 @@ func TestDoTrimsTrailingSlashOnBase(t *testing.T) {
 	if err := c.Do(context.Background(), http.MethodGet, "/x", nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/x" {
-		t.Fatalf("path = %q, want /x (no doubled slash)", gotPath)
+	if gotPath != "/api/x" {
+		t.Fatalf("path = %q, want /api/x (no doubled slash)", gotPath)
 	}
 }
 
