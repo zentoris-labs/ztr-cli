@@ -2,17 +2,13 @@ package catalog
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 )
 
-const twoServices = `{
+const oneService = `{
   "systems": ["ignored"],
   "services": [
-    {"name": "umbrella", "definition": {"components": [
-      {"id": "auth", "variants": [{"type": "service", "serviceId": "${serviceId:leaf}", "versionId": "${versionId:leaf}"}]}
-    ]}},
     {"name": "leaf", "definition": {"components": [
       {"id": "api", "variants": [{"type": "container", "image": "ghcr.io/o/r:${commit}"}]}
     ]}}
@@ -23,7 +19,7 @@ func TestParseRejectsBadCatalogs(t *testing.T) {
 	cases := []struct {
 		name, input, want string
 	}{
-		{"not json", `{`, "parse catalog"},
+		{"not json", `{`, "parse definition file"},
 		{"no services", `{"services": []}`, "no services"},
 		{"nameless", `{"services": [{"definition": {}}]}`, "has no name"},
 		{"definitionless", `{"services": [{"name": "a"}]}`, "has no definition"},
@@ -39,80 +35,41 @@ func TestParseRejectsBadCatalogs(t *testing.T) {
 	}
 }
 
-func TestParseIgnoresSeedOnlySections(t *testing.T) {
-	f, err := Parse([]byte(twoServices))
+func TestParseIgnoresSectionsItHasNoUseFor(t *testing.T) {
+	f, err := Parse([]byte(oneService))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Services) != 2 {
-		t.Fatalf("got %d services, want 2", len(f.Services))
+	if len(f.Services) != 1 {
+		t.Fatalf("got %d services, want 1", len(f.Services))
 	}
 }
 
-func TestReferences(t *testing.T) {
-	got := References(json.RawMessage(`{"a":"${serviceId:x}","b":"${versionId:x}","c":"${versionId:y}","d":"${commit}"}`))
-	want := []string{"x", "y"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("References = %v, want %v (deduplicated, no ${commit})", got, want)
-	}
-}
-
-func TestInDependencyOrderIsLeafFirst(t *testing.T) {
-	f, err := Parse([]byte(twoServices))
+func TestSingleReturnsTheOneService(t *testing.T) {
+	f, err := Parse([]byte(oneService))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ordered, err := f.InDependencyOrder()
+	svc, err := f.Single()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ordered[0].Name != "leaf" || ordered[1].Name != "umbrella" {
-		t.Fatalf("order = %s, %s; want leaf before umbrella", ordered[0].Name, ordered[1].Name)
+	if svc.Name != "leaf" {
+		t.Fatalf("Single = %q, want leaf", svc.Name)
 	}
 }
 
-func TestInDependencyOrderRejectsCycles(t *testing.T) {
-	cases := map[string]string{
-		"pair": `{"services":[
-			{"name":"a","definition":{"r":"${versionId:b}"}},
-			{"name":"b","definition":{"r":"${versionId:a}"}}]}`,
-		"self": `{"services":[{"name":"a","definition":{"r":"${versionId:a}"}}]}`,
-	}
-	for name, input := range cases {
-		t.Run(name, func(t *testing.T) {
-			f, err := Parse([]byte(input))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.InDependencyOrder(); err == nil {
-				t.Fatal("expected a cycle error")
-			}
-		})
-	}
-}
-
-func TestResolveSubstitutesOnlyItsOwnTokens(t *testing.T) {
-	in := json.RawMessage(`{"s":"${serviceId:leaf}","v":"${versionId:leaf}","img":"repo:${commit}"}`)
-	out, err := Resolve(in, func(kind, name string) (string, error) {
-		return kind + "-of-" + name, nil
-	})
+// A file with two services must be refused rather than silently publishing the first onto the one
+// id the caller gave: that would put the wrong definition on a real service, with no error to read.
+func TestSingleRefusesMoreThanOneService(t *testing.T) {
+	f, err := Parse([]byte(`{"services":[
+		{"name":"a","definition":{"components":[]}},
+		{"name":"b","definition":{"components":[]}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := string(out)
-	for _, want := range []string{`"s":"serviceId-of-leaf"`, `"v":"versionId-of-leaf"`, `"img":"repo:${commit}"`} {
-		if !strings.Contains(got, want) {
-			t.Errorf("resolved %s missing %s", got, want)
-		}
-	}
-}
-
-func TestResolveReportsAnUnresolvableReference(t *testing.T) {
-	_, err := Resolve(json.RawMessage(`{"v":"${versionId:missing}"}`), func(_, name string) (string, error) {
-		return "", fmt.Errorf("%s is not in this catalog", name)
-	})
-	if err == nil || !strings.Contains(err.Error(), "${versionId:missing}") {
-		t.Fatalf("err = %v, want the offending token named", err)
+	if _, err := f.Single(); err == nil || !strings.Contains(err.Error(), "has 2") {
+		t.Fatalf("err = %v, want the count named", err)
 	}
 }
 

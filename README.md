@@ -139,36 +139,40 @@ zentoris
   service
     list    --org <organization-id>
     get     <service-id>
-    publish --file <catalog> --org <organization-id> [--var KEY=VALUE ...] [--track v1] [--dry-run]
+    publish --file <definition> --service-id <service-id> [--var KEY=VALUE ...] [--track v1] [--dry-run]
   version
 ```
 
 Typical CI flow, after the images for this commit are pushed:
 
 ```bash
-zentoris service publish -f infra/zentoris-catalog.json --org "$ZENTORIS_ORG" --var "commit=$GITHUB_SHA"
+zentoris service publish -f infra/my-api.json --service-id "$MY_API_SERVICE_ID" --var "commit=$GITHUB_SHA"
 ```
 
-`service publish` reads a catalog file that lists services by NAME, so the same committed file
-publishes to any deployment:
+`service publish` reads one service's definition from a committed file and publishes it as a new
+immutable version:
 
 ```jsonc
 {
   "services": [
-    { "name": "my-api", "definition": { "schemaVersion": 1, "components": [ /* ... */ ] } },
-    { "name": "my-app", "definition": { "schemaVersion": 1, "components": [
-      // A ${serviceId:Name} / ${versionId:Name} reference points at another service in the same
-      // file; publishing resolves it to what this run just created, so nothing pins an id by hand.
-      { "id": "api", "variants": [{ "type": "service", "serviceId": "${serviceId:my-api}", "versionId": "${versionId:my-api}" }] }
+    { "name": "my-api", "definition": { "schemaVersion": 1, "components": [
+      // ${commit} is filled by --var at publish time. The image is resolved to a digest first and
+      // the digest is stamped beside this reference, so both are readable in the published version.
+      { "id": "api", "variants": [{ "type": "container", "image": "ghcr.io/me/my-api:${commit}" }] }
     ] } }
   ]
 }
 ```
 
-Each service must already exist in the organization - publishing never creates one. Services publish
-leaf-first, so a referenced service always has its new version before the service referencing it.
-Container images are resolved to digests before publishing, which is why the image field may carry a
-`${commit}` placeholder that `--var commit=...` fills.
+One file describes one service, and one call publishes one service: several services are several
+calls, independent of each other, so one failing leaves the rest untouched. The service must already
+exist - publishing never creates one - and is named by **id** rather than by name, so the same
+committed file publishes to any deployment and the value that differs between deployments lives in
+the pipeline's configuration instead of in the repository.
+
+Everything else in the definition is passed through exactly as written: an image variable is
+substituted by the platform at publish time, and a variable reference is resolved when a version is
+deployed.
 
 ## Building from source
 
@@ -190,7 +194,10 @@ go test ./...
 ## Status
 
 `auth` (all four sources; OIDC federation acquires the token but its exchange step is not
-yet wired) and `service` (list / get / publish) are usable. An expired login is
+yet wired) and `service` (list / get / publish) are usable. **`service publish` changed shape in
+v0.5.0**: it publishes one service per call, taking `--service-id` where it used to take a
+multi-service catalog file and `--org`. A pre-v0.5.0 invocation fails on the unknown flag rather
+than doing something unexpected. An expired login is
 renewed silently from its refresh token before each command, so you sign in once and only
 re-authenticate when the refresh token itself expires or is revoked. Issues and pull requests are
 welcome.

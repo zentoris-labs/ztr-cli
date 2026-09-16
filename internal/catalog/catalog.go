@@ -1,57 +1,49 @@
-// Package catalog reads a committed service-definition catalog and prepares it for publishing.
+// Package catalog reads a committed service definition and prepares it for publishing.
 //
-// A catalog file is the same shape the platform's own seeder consumes, so one committed file
-// serves both the first-time seed and every later publish from CI:
+// A definition file describes ONE service:
 //
-//	{ "services": [ { "name": "zentoris-auth", "definition": { "schemaVersion": 1, ... } } ] }
+//	{ "services": [ { "name": "my-api", "definition": { "schemaVersion": 1, ... } } ] }
 //
-// Any other top-level key is ignored, so a file that also carries seed-only sections (connections,
-// regions, systems) publishes without complaint.
+// The `services` array is a one-entry envelope rather than a list: a file publishes to one
+// service, named by id on the command line, so each service's definition can be read, reviewed
+// and published on its own. Any other top-level key is ignored, so a file that also carries
+// sections this command has no use for publishes without complaint.
 //
-// Two kinds of placeholder are the CLIENT's to resolve, because the platform does not know them:
-// ${serviceId:Name} and ${versionId:Name}, which point at another service in the same catalog.
-// Every other ${...} form is left alone - an image variable is substituted by the server at publish
-// time, and a variable reference is resolved at deploy time.
+// Every ${...} form in a definition is left exactly as written. An image variable is substituted
+// by the platform at publish time and a variable reference is resolved at deploy time, so
+// nothing here rewrites the text it publishes; the one thing this package adds is a resolved
+// digest beside each container image, because publish itself performs no network I/O.
 package catalog
 
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"sort"
 	"strings"
 )
 
-// Token prefixes this package resolves. Kept as constants because they appear in both the
-// reference scan and the error message a stale reference produces.
-const (
-	serviceIDPrefix = "${serviceId:"
-	versionIDPrefix = "${versionId:"
-)
-
-// refPattern captures the kind and the referenced service name of one placeholder.
-var refPattern = regexp.MustCompile(`\$\{(serviceId|versionId):([^}]+)\}`)
-
-// Service is one catalog entry: the service's name in the target organization, and the definition
-// to publish as a new immutable version.
+// Service is the file's one entry: a human-readable name for output, and the definition to publish
+// as a new immutable version. The name identifies nothing - the publish target is the service id
+// given on the command line - so renaming a service on the platform does not strand its file.
 type Service struct {
 	Name       string          `json:"name"`
 	Definition json.RawMessage `json:"definition"`
 }
 
-// File is a parsed catalog.
+// File is a parsed definition file.
 type File struct {
 	Services []Service `json:"services"`
 }
 
-// Parse reads a catalog file and rejects the shapes that would fail later with a worse message.
+// Parse reads a definition file and rejects the shapes that would fail later with a worse message.
+// It accepts the envelope as written and leaves "exactly one service" to Single, so a malformed
+// entry is reported as what it is rather than as a wrong count.
 func Parse(data []byte) (*File, error) {
 	var f File
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse catalog: %w", err)
+		return nil, fmt.Errorf("parse definition file: %w", err)
 	}
 	if len(f.Services) == 0 {
-		return nil, fmt.Errorf("catalog has no services")
+		return nil, fmt.Errorf("file declares no services")
 	}
 	seen := make(map[string]bool, len(f.Services))
 	for i, s := range f.Services {
@@ -69,97 +61,14 @@ func Parse(data []byte) (*File, error) {
 	return &f, nil
 }
 
-// References returns the catalog service names one definition points at, deduplicated. A reference
-// to a name the catalog does not carry is returned too: the caller decides whether that is fatal
-// (publishing needs it) or fine (it may already exist on the target).
-func References(definition json.RawMessage) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, m := range refPattern.FindAllStringSubmatch(string(definition), -1) {
-		if name := m[2]; !seen[name] {
-			seen[name] = true
-			out = append(out, name)
-		}
+// Single returns the file's one service. A file describes exactly one, so anything else is a
+// mistake worth naming rather than a list to iterate: publishing takes one service id, and
+// silently using the first entry would publish the wrong definition onto it.
+func (f *File) Single() (Service, error) {
+	if len(f.Services) != 1 {
+		return Service{}, fmt.Errorf("a definition file describes one service, but this one has %d", len(f.Services))
 	}
-	return out
-}
-
-// InDependencyOrder returns the services leaf-first, so a referenced service is always published
-// before the one referencing it. Order within a tier is the catalog's own, which keeps a run's
-// output stable and diffable. A reference cycle is an error, since no order can satisfy it.
-func (f *File) InDependencyOrder() ([]Service, error) {
-	byName := make(map[string]Service, len(f.Services))
-	position := make(map[string]int, len(f.Services))
-	for i, s := range f.Services {
-		byName[s.Name] = s
-		position[s.Name] = i
-	}
-
-	var (
-		out      []Service
-		done     = map[string]bool{}
-		visiting = map[string]bool{}
-		visit    func(name string, path []string) error
-	)
-	visit = func(name string, path []string) error {
-		if done[name] {
-			return nil
-		}
-		if visiting[name] {
-			return fmt.Errorf("reference cycle: %s -> %s", strings.Join(path, " -> "), name)
-		}
-		svc, ok := byName[name]
-		if !ok {
-			// Not in this catalog: nothing to order, and whether it must exist is the caller's call.
-			return nil
-		}
-		visiting[name] = true
-		deps := References(svc.Definition)
-		sort.Slice(deps, func(i, j int) bool { return position[deps[i]] < position[deps[j]] })
-		for _, dep := range deps {
-			if dep == name {
-				return fmt.Errorf("service %q references itself", name)
-			}
-			if err := visit(dep, append(path, name)); err != nil {
-				return err
-			}
-		}
-		visiting[name] = false
-		done[name] = true
-		out = append(out, svc)
-		return nil
-	}
-
-	for _, s := range f.Services {
-		if err := visit(s.Name, nil); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// Resolve substitutes every ${serviceId:Name} / ${versionId:Name} placeholder in a definition,
-// asking lookup for each one. Substitution runs on the JSON text, so a placeholder is replaced
-// wherever it appears and no other ${...} form is touched. An unresolvable reference is an error:
-// publishing a definition that still names a placeholder would store the literal text in an
-// immutable version.
-func Resolve(definition json.RawMessage, lookup func(kind, name string) (string, error)) (json.RawMessage, error) {
-	var failure error
-	resolved := refPattern.ReplaceAllStringFunc(string(definition), func(token string) string {
-		m := refPattern.FindStringSubmatch(token)
-		value, err := lookup(m[1], m[2])
-		if err != nil {
-			if failure == nil {
-				failure = fmt.Errorf("%s: %w", token, err)
-			}
-			return token
-		}
-		return value
-	})
-	if failure != nil {
-		return nil, failure
-	}
-	return json.RawMessage(resolved), nil
+	return f.Services[0], nil
 }
 
 // ContainerVariant is one container variant of a definition, exposed so the caller can resolve its

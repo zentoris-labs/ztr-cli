@@ -12,14 +12,14 @@ func TestServiceListRequiresOrg(t *testing.T) {
 	}
 }
 
-func TestServicePublishRequiresFileAndOrg(t *testing.T) {
+func TestServicePublishRequiresFileAndServiceID(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"no file", []string{"--org", "org_1"}, "--file is required"},
-		{"no org", []string{"-f", "catalog.json"}, "--org is required"},
+		{"no file", []string{"--service-id", "svc_1"}, "--file is required"},
+		{"no service id", []string{"-f", "my-api.json"}, "--service-id is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
