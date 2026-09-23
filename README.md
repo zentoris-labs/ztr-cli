@@ -49,7 +49,40 @@ one source, so `zentoris auth status` reports which one would be used.
 | 1 | token                | `--token` / `ZENTORIS_TOKEN` (a personal access token works) |
 | 2 | login                | cached by `zentoris auth login`                |
 | 3 | client-credentials   | `ZENTORIS_CLIENT_ID` / `ZENTORIS_CLIENT_SECRET` |
-| 4 | oidc-federation      | a CI OIDC token (`ZENTORIS_OIDC_TOKEN` / file, or auto-fetched on GitHub Actions) |
+| 4 | oidc-federation      | a CI OIDC token (`ZENTORIS_OIDC_TOKEN` / file, or auto-fetched on GitHub Actions) + `ZENTORIS_TRUST_ID` |
+
+### CI without a stored secret
+
+In CI, prefer source 4 over a client id/secret: the runner mints a short-lived OIDC token
+describing the job (repository, branch, workflow), and the CLI exchanges it (RFC 8693) for a
+Zentoris token. Nothing long-lived is stored in the repository, and the resulting token is bound
+to the trust it is exchanged under.
+
+Set `ZENTORIS_TRUST_ID` to the id of that trust - the one you created on the service account this
+job should act as. It selects the issuer, the audience, and the conditions the job's token must
+match. It is an identifier, not a credential: on its own it grants nothing without a validly-signed
+matching token, so it belongs in plain CI configuration rather than a secret store. The audience
+the trust is created with must be the same one the runner requests (below).
+
+On GitHub Actions the CLI fetches the OIDC token itself - grant the job `id-token: write`:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+steps:
+  - uses: actions/checkout@v4
+  - run: zentoris service publish -f infra/my-api.json --service-id "$MY_API_SERVICE_ID"
+    env:
+      ZENTORIS_DOMAIN: ${{ vars.ZENTORIS_DOMAIN }}
+      ZENTORIS_TRUST_ID: ${{ vars.ZENTORIS_TRUST_ID }}
+      MY_API_SERVICE_ID: ${{ vars.MY_API_SERVICE_ID }}
+```
+
+Any other CI works without vendor-specific code: hand the CLI the runner's OIDC token in
+`ZENTORIS_OIDC_TOKEN` (or a path in `ZENTORIS_OIDC_TOKEN_FILE`) - e.g. GitLab `id_tokens` or
+CircleCI's `$CIRCLE_OIDC_TOKEN`. Request it with your Zentoris auth base URL as the audience, and
+set `ZENTORIS_TRUST_ID` the same way.
 
 ### `zentoris auth login`
 
@@ -113,7 +146,9 @@ scope, and tenant are fixed first-party constants, not settings.
 The CLI emits indented JSON.
 
 Client-credentials logins read `ZENTORIS_CLIENT_ID` / `ZENTORIS_CLIENT_SECRET` from the
-environment (see Authentication).
+environment, and CI federation reads `ZENTORIS_OIDC_TOKEN` / `ZENTORIS_OIDC_TOKEN_FILE` and
+`ZENTORIS_TRUST_ID` (see Authentication). These are environment-only: they are set once in a
+shell or a CI job, never typed at a prompt.
 
 To reach a self-hosted or otherwise non-default deployment, point `--domain` at its base
 domain (or set `ZENTORIS_DOMAIN`); both endpoints derive from it:
@@ -193,8 +228,7 @@ go test ./...
 
 ## Status
 
-`auth` (all four sources; OIDC federation acquires the token but its exchange step is not
-yet wired) and `service` (list / get / publish) are usable. **`service publish` changed shape in
+`auth` (all four sources) and `service` (list / get / publish) are usable. **`service publish` changed shape in
 v0.5.0**: it publishes one service per call, taking `--service-id` where it used to take a
 multi-service catalog file and `--org`. A pre-v0.5.0 invocation fails on the unknown flag rather
 than doing something unexpected. An expired login is
