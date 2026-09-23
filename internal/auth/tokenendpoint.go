@@ -65,16 +65,6 @@ func postTokenEndpoint(ctx context.Context, cfg *config.Config, form url.Values)
 	return body.AccessToken, time.Now().Add(ttl - tokenRefreshMargin), nil
 }
 
-// tokenEndpointErr is a failure the token endpoint REPORTED (as opposed to a transport failure),
-// carrying the RFC 6749 error code so a caller can add context to a code that needs it without
-// re-parsing the body. The rendered message is what the user sees.
-type tokenEndpointErr struct {
-	code string
-	msg  string
-}
-
-func (e *tokenEndpointErr) Error() string { return e.msg }
-
 // tokenEndpointError renders an OP token-endpoint failure body (an RFC 6749 OAuth error or an
 // RFC 9457 problem+json) into a readable message. Error bodies carry no token, so this is safe.
 func tokenEndpointError(status string, body []byte) error {
@@ -85,16 +75,14 @@ func tokenEndpointError(status string, body []byte) error {
 		Detail    string `json:"detail"`
 	}
 	_ = json.Unmarshal(body, &p)
-	var msg string
 	switch {
 	case p.ErrorDesc != "":
-		msg = fmt.Sprintf("token endpoint %s: %s (%s)", status, p.ErrorDesc, p.Error)
+		return fmt.Errorf("token endpoint %s: %s (%s)", status, p.ErrorDesc, p.Error)
 	case p.Detail != "":
-		msg = fmt.Sprintf("token endpoint %s: %s", status, p.Detail)
+		return fmt.Errorf("token endpoint %s: %s", status, p.Detail)
 	case p.Error != "":
-		msg = fmt.Sprintf("token endpoint %s: %s", status, p.Error)
+		return fmt.Errorf("token endpoint %s: %s", status, p.Error)
 	default:
-		msg = fmt.Sprintf("token endpoint returned %s", status)
+		return fmt.Errorf("token endpoint returned %s", status)
 	}
-	return &tokenEndpointErr{code: p.Error, msg: msg}
 }

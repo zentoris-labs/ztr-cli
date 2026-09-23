@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -109,24 +108,9 @@ func (s *OIDCFederationSource) exchange(ctx context.Context, jwt string) (token 
 	}
 	token, refreshAt, err = postTokenEndpoint(ctx, s.cfg, form)
 	if err != nil {
-		return "", time.Time{}, s.explainReject(err)
+		return "", time.Time{}, err
 	}
 	return token, refreshAt, nil
-}
-
-// explainReject adds context to the ONE failure that arrives without any. A rejected exchange
-// answers with a uniform invalid_grant carrying no reason - deliberately, so that a caller cannot
-// probe a trust one condition at a time - which leaves the operator with nothing to act on. For
-// that code, name what has to line up; every other failure already says enough on its own.
-func (s *OIDCFederationSource) explainReject(err error) error {
-	var te *tokenEndpointErr
-	if !errors.As(err, &te) || te.code != "invalid_grant" {
-		return err
-	}
-	return fmt.Errorf("%w - the exchange was rejected without a reason, which is expected: check that "+
-		"trust %q exists and is enabled, that its issuer and audience match the token this runner minted, "+
-		"and that the token's claims satisfy the trust's conditions",
-		err, strings.TrimSpace(s.cfg.TrustID))
 }
 
 // fetchOIDCToken returns the first OIDC JWT any provider can supply, and the provider name.
