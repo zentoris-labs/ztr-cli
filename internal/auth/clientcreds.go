@@ -2,12 +2,7 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -45,68 +40,15 @@ func (s *ClientCredentialsSource) Token(ctx context.Context) (string, error) {
 		return s.cached, nil
 	}
 
-	endpoint := fmt.Sprintf("%s/tenants/%s/oauth2/token",
-		strings.TrimRight(s.cfg.AuthBase, "/"), opTenant)
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {s.cfg.ClientID},
 		"client_secret": {s.cfg.ClientSecret},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	token, refreshAt, err := postTokenEndpoint(ctx, s.cfg, form)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.cfg.HTTPClient(15 * time.Second).Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", tokenEndpointError(resp.Status, data)
-	}
-
-	var body struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return "", fmt.Errorf("decode token response: %w", err)
-	}
-	if body.AccessToken == "" {
-		return "", fmt.Errorf("token endpoint returned no access_token")
-	}
-
-	ttl := time.Duration(body.ExpiresIn) * time.Second
-	if ttl <= 0 {
-		ttl = 5 * time.Minute
-	}
-	s.cached = body.AccessToken
-	s.expiry = time.Now().Add(ttl - 30*time.Second) // refresh a little early
+	s.cached, s.expiry = token, refreshAt
 	return s.cached, nil
-}
-
-// tokenEndpointError renders an OP token-endpoint failure body (an RFC 6749 OAuth error or an
-// RFC 9457 problem+json) into a readable message. Error bodies carry no token, so this is safe.
-func tokenEndpointError(status string, body []byte) error {
-	var p struct {
-		Error     string `json:"error"`
-		ErrorDesc string `json:"error_description"`
-		Title     string `json:"title"`
-		Detail    string `json:"detail"`
-	}
-	_ = json.Unmarshal(body, &p)
-	switch {
-	case p.ErrorDesc != "":
-		return fmt.Errorf("token endpoint %s: %s (%s)", status, p.ErrorDesc, p.Error)
-	case p.Detail != "":
-		return fmt.Errorf("token endpoint %s: %s", status, p.Detail)
-	case p.Error != "":
-		return fmt.Errorf("token endpoint %s: %s", status, p.Error)
-	default:
-		return fmt.Errorf("token endpoint returned %s", status)
-	}
 }

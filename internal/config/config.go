@@ -43,6 +43,10 @@ type Config struct {
 	Token        string // raw bearer or apt_ PAT: --token / ZENTORIS_TOKEN
 	ClientID     string // ZENTORIS_CLIENT_ID
 	ClientSecret string // ZENTORIS_CLIENT_SECRET
+	// TrustID names the federated trust a CI OIDC token is exchanged under (ZENTORIS_TRUST_ID).
+	// It is an identifier, not a credential - the signed OIDC token and the trust's own conditions
+	// are what authorize - so it belongs in plain CI config next to ZENTORIS_DOMAIN.
+	TrustID string // ZENTORIS_TRUST_ID
 }
 
 // Load builds a Config from a small set of environment variables and built-in defaults. Only the
@@ -59,6 +63,7 @@ func Load() *Config {
 		Token:        os.Getenv("ZENTORIS_TOKEN"),
 		ClientID:     os.Getenv("ZENTORIS_CLIENT_ID"),
 		ClientSecret: os.Getenv("ZENTORIS_CLIENT_SECRET"),
+		TrustID:      os.Getenv("ZENTORIS_TRUST_ID"),
 	}
 	// deriveFromDomain is the single place APIBase/AuthBase/Insecure are computed; ApplyDomain
 	// (the CLI path) validates first and reruns it, but a bare Load() must still be usable.

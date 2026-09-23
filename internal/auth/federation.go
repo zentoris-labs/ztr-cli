@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zentoris-labs/ztr-cli/internal/config"
@@ -17,19 +18,33 @@ import (
 // OIDCFederationSource is the CI credential path. Rather than integrating each CI vendor,
 // it treats them uniformly: every major CI can mint a short-lived OIDC JWT, and Zentoris
 // exchanges ANY trusted issuer's JWT for a scoped token (RFC 8693). The issuer, audience,
-// and claim-match rules live in a per-service trust policy on the server, so adding a new
-// CI vendor is customer configuration, not zentoris code.
+// and claim-match rules live in a trust configured on the server and named by ZENTORIS_TRUST_ID,
+// so adding a new CI vendor is customer configuration, not zentoris code.
 //
 // The ONE place vendors differ is how the runner hands us the JWT, so that is the only
 // pluggable part here: a short list of token providers, tried in order. Most CIs expose the
 // JWT as an env var or file, which the generic provider covers with zero vendor code; only
 // a couple (e.g. GitHub Actions) require an API call, handled by a tiny fetcher.
 //
-// STUB at the exchange step: the Zentoris token-exchange endpoint is not built yet.
+// The exchanged token is cached in memory until shortly before it expires, so a command that
+// makes several API calls exchanges once; nothing is written to disk (a CI credential is
+// short-lived by design and the runner is thrown away).
 type OIDCFederationSource struct {
 	cfg       *config.Config
 	providers []oidcTokenProvider
+
+	mu     sync.Mutex
+	cached string
+	expiry time.Time
 }
+
+// RFC 8693 token-exchange identifiers: the grant, the type of the JWT we hand over, and the
+// type of token we ask for in return.
+const (
+	tokenExchangeGrant   = "urn:ietf:params:oauth:grant-type:token-exchange"
+	jwtTokenType         = "urn:ietf:params:oauth:token-type:jwt"
+	accessTokenTokenType = "urn:ietf:params:oauth:token-type:access_token"
+)
 
 // NewOIDCFederationSource wires the token-provider registry: generic env/file first (covers
 // GitLab, CircleCI, Buildkite-env, or a hand-provided token), then vendor fetchers.
@@ -47,6 +62,12 @@ func NewOIDCFederationSource(cfg *config.Config) *OIDCFederationSource {
 func (s *OIDCFederationSource) Name() string { return "oidc-federation" }
 
 func (s *OIDCFederationSource) Token(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cached != "" && time.Now().Before(s.expiry) {
+		return s.cached, nil
+	}
+
 	jwt, provider, err := s.fetchOIDCToken(ctx)
 	if err != nil {
 		return "", err
@@ -54,14 +75,42 @@ func (s *OIDCFederationSource) Token(ctx context.Context) (string, error) {
 	if jwt == "" {
 		return "", ErrNoCredential // no CI OIDC token available in this environment
 	}
-	// TODO(auth-federation): exchange the vendor-agnostic JWT at Zentoris:
-	//   POST {AuthBase}/tenants/{tenant}/oauth2/token
-	//     grant_type=urn:ietf:params:oauth:grant-type:token-exchange
-	//     subject_token=<jwt>  subject_token_type=urn:ietf:params:oauth:token-type:jwt
-	//   Zentoris validates the issuer's JWKS + audience and matches the JWT claims against the
-	//   target service's trust policy, returning a short-lived per-service token.
-	return "", fmt.Errorf("OIDC federation token acquired via %q, but the Zentoris token-exchange endpoint is not built yet; "+
-		"use client credentials (ZENTORIS_CLIENT_ID/ZENTORIS_CLIENT_SECRET) as the bridge", provider)
+	// A CI identity IS present, so a missing trust id is a misconfiguration, not an absent
+	// credential: say so here rather than letting the chain report "no credential found" or the
+	// server answer with its deliberately uninformative uniform reject.
+	if strings.TrimSpace(s.cfg.TrustID) == "" {
+		return "", fmt.Errorf("a %s OIDC token is available but ZENTORIS_TRUST_ID is not set; "+
+			"set it to the id of the federated trust this job exchanges under", provider)
+	}
+
+	token, refreshAt, err := s.exchange(ctx, jwt)
+	if err != nil {
+		return "", fmt.Errorf("exchanging the %s OIDC token: %w", provider, err)
+	}
+	s.cached, s.expiry = token, refreshAt
+	return token, nil
+}
+
+// exchange trades the vendor-agnostic JWT for a Zentoris token (RFC 8693). Zentoris validates
+// the issuer's JWKS and audience, then matches the JWT claims (repository, branch, workflow, ...)
+// against the conditions of the named trust (ZENTORIS_TRUST_ID), and returns a short-lived token
+// acting as that trust's service account. No secret is involved: the trust is in the claims.
+func (s *OIDCFederationSource) exchange(ctx context.Context, jwt string) (token string, refreshAt time.Time, err error) {
+	form := url.Values{
+		"grant_type":           {tokenExchangeGrant},
+		"subject_token":        {jwt},
+		"subject_token_type":   {jwtTokenType},
+		"requested_token_type": {accessTokenTokenType},
+		// trust_id names the exact trust to assume (issuer + audience + conditions + the service
+		// account it acts as). An identifier, not a credential: the signed subject_token and the
+		// trust's conditions authorize. No client_id - this grant is anonymous by design.
+		"trust_id": {strings.TrimSpace(s.cfg.TrustID)},
+	}
+	token, refreshAt, err = postTokenEndpoint(ctx, s.cfg, form)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return token, refreshAt, nil
 }
 
 // fetchOIDCToken returns the first OIDC JWT any provider can supply, and the provider name.

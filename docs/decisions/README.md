@@ -9,6 +9,7 @@ and the reasoning, never Zentoris internals.
 
 | # | Decision |
 |---|----------|
+| [0004](0004-trust-id-env-only.md) | `ZENTORIS_TRUST_ID`: environment only, no flag |
 | [0003](0003-silent-token-refresh.md) | Silent token refresh with a per-profile lock |
 | [0002](0002-managed-profiles.md) | Managed profiles: switch, list, and an active default |
 | [0001](0001-configuration-surface.md) | Configuration surface: one `--domain` knob, fixed identity constants |

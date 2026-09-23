@@ -8,8 +8,8 @@
 //  3. client-creds ZENTORIS_CLIENT_ID / ZENTORIS_CLIENT_SECRET (static machine-to-machine)
 //  4. oidc         CI OIDC (GitHub, GitLab, Buildkite, ... any trusted issuer), exchanged for a Zentoris token
 //
-// Today 1, 2, and 3 are wired end-to-end; 4 acquires the CI JWT but its Zentoris
-// exchange is stubbed (see federation.go).
+// All four are wired end-to-end. 4 needs no stored secret: the CI runner's own OIDC JWT is
+// exchanged for a Zentoris token against a server-side trust policy (see federation.go).
 package auth
 
 import (
