@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -83,12 +84,11 @@ func (s *OIDCFederationSource) Token(ctx context.Context) (string, error) {
 			"set it to the id of the federated trust this job exchanges under", provider)
 	}
 
-	token, ttl, err := s.exchange(ctx, jwt)
+	token, refreshAt, err := s.exchange(ctx, jwt)
 	if err != nil {
 		return "", fmt.Errorf("exchanging the %s OIDC token: %w", provider, err)
 	}
-	s.cached = token
-	s.expiry = time.Now().Add(ttl - 30*time.Second) // refresh a little early
+	s.cached, s.expiry = token, refreshAt
 	return token, nil
 }
 
@@ -96,9 +96,7 @@ func (s *OIDCFederationSource) Token(ctx context.Context) (string, error) {
 // the issuer's JWKS and audience, then matches the JWT claims (repository, branch, workflow, ...)
 // against the conditions of the named trust (ZENTORIS_TRUST_ID), and returns a short-lived token
 // acting as that trust's service account. No secret is involved: the trust is in the claims.
-func (s *OIDCFederationSource) exchange(ctx context.Context, jwt string) (token string, ttl time.Duration, err error) {
-	endpoint := fmt.Sprintf("%s/tenants/%s/oauth2/token",
-		strings.TrimRight(s.cfg.AuthBase, "/"), opTenant)
+func (s *OIDCFederationSource) exchange(ctx context.Context, jwt string) (token string, refreshAt time.Time, err error) {
 	form := url.Values{
 		"grant_type":           {tokenExchangeGrant},
 		"subject_token":        {jwt},
@@ -109,51 +107,20 @@ func (s *OIDCFederationSource) exchange(ctx context.Context, jwt string) (token 
 		// trust's conditions authorize. No client_id - this grant is anonymous by design.
 		"trust_id": {strings.TrimSpace(s.cfg.TrustID)},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	token, refreshAt, err = postTokenEndpoint(ctx, s.cfg, form)
 	if err != nil {
-		return "", 0, err
+		return "", time.Time{}, s.explainReject(err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.cfg.HTTPClient(15 * time.Second).Do(req)
-	if err != nil {
-		return "", 0, fmt.Errorf("token endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", 0, s.exchangeError(resp.Status, data)
-	}
-
-	var body struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return "", 0, fmt.Errorf("decode token response: %w", err)
-	}
-	if body.AccessToken == "" {
-		return "", 0, fmt.Errorf("token endpoint returned no access_token")
-	}
-	ttl = time.Duration(body.ExpiresIn) * time.Second
-	if ttl <= 0 {
-		ttl = 5 * time.Minute
-	}
-	return body.AccessToken, ttl, nil
+	return token, refreshAt, nil
 }
 
-// exchangeError renders a failed exchange. A rejected exchange answers with a uniform
-// invalid_grant carrying no reason - deliberately, so that a caller cannot probe a trust one
-// condition at a time - which leaves the operator with nothing to act on. For that one code, name
-// what has to line up; anything else already says enough on its own.
-func (s *OIDCFederationSource) exchangeError(status string, body []byte) error {
-	err := tokenEndpointError(status, body)
-	var p struct {
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(body, &p)
-	if p.Error != "invalid_grant" {
+// explainReject adds context to the ONE failure that arrives without any. A rejected exchange
+// answers with a uniform invalid_grant carrying no reason - deliberately, so that a caller cannot
+// probe a trust one condition at a time - which leaves the operator with nothing to act on. For
+// that code, name what has to line up; every other failure already says enough on its own.
+func (s *OIDCFederationSource) explainReject(err error) error {
+	var te *tokenEndpointErr
+	if !errors.As(err, &te) || te.code != "invalid_grant" {
 		return err
 	}
 	return fmt.Errorf("%w - the exchange was rejected without a reason, which is expected: check that "+
