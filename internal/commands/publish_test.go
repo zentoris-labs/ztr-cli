@@ -152,3 +152,84 @@ func TestServicePublishRejectsABadFile(t *testing.T) {
 		})
 	}
 }
+
+// An infrastructure component's OpenTofu code lives beside the definition as real files. Publishing
+// reads them from the DEFINITION FILE's directory - never the working directory - and sends their
+// contents, so what the platform stores is the same inline source it has always stored.
+func TestServicePublishInlinesOpenTofuFilesFromDisk(t *testing.T) {
+	var publishBody string
+	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		publishBody = string(b)
+		io.WriteString(w, `{"id":"ver-1","track":"v1","versionNumber":1}`)
+	})
+
+	home := t.TempDir()
+	file := filepath.Join(home, "leaf.json")
+	if err := os.WriteFile(file, []byte(`{"services":[{"name":"leaf","definition":{"components":[
+	  {"id":"federation","variants":[{"type":"managed","tool":{"type":"opentofu",
+	    "source":{"type":"inline","dir":"federation"}}}]}
+	]}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, "federation"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "federation", "main.tf"), []byte(`resource "x" "y" {}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run from somewhere else entirely: a relative dir is relative to the file, not to the shell.
+	t.Chdir(t.TempDir())
+
+	_, progress, err := runSplit(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(progress, "inlined federation from federation (1 files)") {
+		t.Errorf("progress %q does not name what it published", progress)
+	}
+	if !strings.Contains(publishBody, `"files":{"main.tf":"resource \"x\" \"y\" {}"}`) {
+		t.Errorf("declaration %q, want the file contents inlined", publishBody)
+	}
+	if strings.Contains(publishBody, `"dir"`) {
+		t.Errorf("declaration %q leaked a local path to the platform", publishBody)
+	}
+}
+
+// The expansion happens before anything touches the network, so a dry run proves the local files
+// too - and a directory that cannot be published fails without a request being made.
+func TestServicePublishDryRunReportsInlinedFiles(t *testing.T) {
+	d, _ := apiDeps(t, func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("dry run sent %s %s", r.Method, r.URL.Path)
+	})
+
+	home := t.TempDir()
+	file := filepath.Join(home, "leaf.json")
+	if err := os.WriteFile(file, []byte(`{"services":[{"name":"leaf","definition":{"components":[
+	  {"id":"federation","variants":[{"type":"managed","tool":{"type":"opentofu",
+	    "source":{"type":"inline","dir":"missing"}}}]}
+	]}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1", "--dry-run"); err == nil ||
+		!strings.Contains(err.Error(), `component "federation"`) {
+		t.Fatalf("err = %v, want the component named", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(home, "missing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "missing", "main.tf"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1", "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"inlined federation from missing", "main.tf (2 bytes)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run output %q missing %q", out, want)
+		}
+	}
+}
