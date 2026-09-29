@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -37,6 +38,11 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 			"The service must already exist (this command never creates one) and is named by id, so\n" +
 			"the same committed file publishes to any deployment - what differs between deployments is\n" +
 			"the id, which belongs in the pipeline's configuration rather than in the repository.\n\n" +
+			"An infrastructure component may keep its OpenTofu code as real files: give its inline source\n" +
+			"a `dir` relative to this file instead of a `files` map, and the infrastructure code in that\n" +
+			"directory (.tf, .tfvars, .tf.json, .tfvars.json) is read and published as its contents.\n" +
+			"Nothing on disk is published that the directory does not hold - no subdirectory is descended\n" +
+			"into and no symlink followed.\n\n" +
 			"Container images are resolved to digests first, because publish itself is network-free and\n" +
 			"only validates that every image is pinned. The ${...} form stays in the image reference and\n" +
 			"the digest is stamped beside it, so both what was written and what it locked to are kept.\n\n" +
@@ -68,11 +74,27 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 				return err
 			}
 
+			definition, err := catalog.Decode(svc.Definition)
+			if err != nil {
+				return fmt.Errorf("service %q: %w", svc.Name, err)
+			}
+			inlined, err := inlineSources(definition, filepath.Dir(file))
+			if err != nil {
+				return fmt.Errorf("service %q: %w", svc.Name, err)
+			}
+
 			if dryRun {
-				fmt.Fprintln(c.OutOrStdout(), "DRY RUN")
-				fmt.Fprintf(c.OutOrStdout(), "  publish %s -> POST /services/%s/versions (track %s)\n",
+				out := c.OutOrStdout()
+				fmt.Fprintln(out, "DRY RUN")
+				fmt.Fprintf(out, "  publish %s -> POST /services/%s/versions (track %s)\n",
 					svc.Name, serviceID, track)
-				fmt.Fprintln(c.OutOrStdout(),
+				for _, source := range inlined {
+					fmt.Fprintf(out, "  inlined %s from %s\n", source.Component, source.Dir)
+					for _, f := range source.Files {
+						fmt.Fprintf(out, "    %s (%d bytes)\n", f.Name, f.Bytes)
+					}
+				}
+				fmt.Fprintln(out,
 					"  the service is not read and no image is resolved, so this proves the file, not the target")
 				return nil
 			}
@@ -80,9 +102,8 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 			ctx := c.Context()
 			progress := c.ErrOrStderr()
 
-			definition, err := catalog.Decode(svc.Definition)
-			if err != nil {
-				return fmt.Errorf("service %q: %w", svc.Name, err)
+			for _, source := range inlined {
+				fmt.Fprintf(progress, "inlined %s from %s (%d files)\n", source.Component, source.Dir, len(source.Files))
 			}
 			for _, image := range definition.UnpinnedImages() {
 				digest, err := resolveImage(ctx, d, serviceID, image.Image, vars)
@@ -123,4 +144,32 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 	cmd.Flags().StringArrayVar(&sets, "var", nil, "value for a definition ${name} placeholder, KEY=VALUE (repeatable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "read and check the file, then print what would be published")
 	return cmd
+}
+
+// inlinedSource records one expanded inline tool source, for the progress line that tells the
+// operator which local files became part of the published version.
+type inlinedSource struct {
+	Component string
+	Dir       string
+	Files     []catalog.InlinedFile
+}
+
+// inlineSources reads every inline tool source that names a directory and replaces it with the file
+// contents the platform stores. It runs before the image pass and before the dry-run report, because
+// it needs no network and a definition that cannot be assembled locally is not worth resolving
+// images for.
+func inlineSources(definition *catalog.Definition, baseDir string) ([]inlinedSource, error) {
+	dirs, err := definition.InlineDirs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]inlinedSource, 0, len(dirs))
+	for _, dir := range dirs {
+		files, err := dir.Expand(baseDir)
+		if err != nil {
+			return nil, fmt.Errorf("component %q: %w", dir.Component, err)
+		}
+		out = append(out, inlinedSource{Component: dir.Component, Dir: dir.Dir, Files: files})
+	}
+	return out, nil
 }

@@ -209,6 +209,29 @@ Everything else in the definition is passed through exactly as written: an image
 substituted by the platform at publish time, and a variable reference is resolved when a version is
 deployed.
 
+### Infrastructure code as files
+
+An infrastructure component's OpenTofu code can stay in real `.tf` files instead of being pasted
+into the definition as strings. Point its inline source at a directory:
+
+```jsonc
+{ "id": "federation", "variants": [
+  { "type": "managed", "tool": { "type": "opentofu",
+    "source": { "type": "inline", "dir": "federation" } } }
+] }
+```
+
+`dir` is relative to the definition file, never to the working directory, so the same file publishes
+from a repository root and from a CI checkout. At publish time the infrastructure code in that
+directory - `.tf`, `.tfvars`, `.tf.json` and `.tfvars.json`, the four shapes OpenTofu loads - is read
+and sent as the component's contents; `dir` itself never leaves your machine, and
+the platform stores exactly what it would have stored had you written the contents out by hand.
+
+The read is deliberately narrow: flat (a subdirectory is not descended into - a module belongs in a
+source of its own), regular files only (a symlink is not followed), and other files such as a README
+are skipped rather than rejected. `--dry-run` lists what each component would publish, without a
+single request.
+
 ## Building from source
 
 ```bash
