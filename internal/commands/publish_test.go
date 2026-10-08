@@ -234,18 +234,23 @@ func TestServicePublishDryRunReportsInlinedFiles(t *testing.T) {
 	}
 }
 
-// The platform reports which CPU architectures the resolved image runs on. Publish needs them on
-// the variant, so the CLI stamps them beside the digest - and only when the platform said.
+// The platform reports which CPU architectures the resolved image runs on, and the CLI stamps them
+// beside the digest. A reported value replaces what the file wrote. When the platform reports none,
+// the file's value is kept and a progress line says so.
 func TestServicePublishStampsArchs(t *testing.T) {
 	cases := []struct {
-		name     string
-		resolved string
-		want     string
+		name      string
+		fileArchs string
+		resolved  string
+		wantBody  string
+		wantLine  string
 	}{
-		{"reported", `{"digest":"sha256:aa","archs":["amd64","arm64"]}`, `"archs":["amd64","arm64"]`},
-		{"unknown", `{"digest":"sha256:aa","archs":null}`, ""},
-		{"empty", `{"digest":"sha256:aa","archs":[]}`, ""},
-		{"older platform", `{"digest":"sha256:aa"}`, ""},
+		{"reported wins", `,"archs":["arm64"]`, `{"digest":"sha256:aa","archs":["amd64","arm64"]}`,
+			`"archs":["amd64","arm64"]`, ""},
+		{"file kept", `,"archs":["arm64"]`, `{"digest":"sha256:aa","archs":null}`,
+			`"archs":["arm64"]`, "api: the platform reported no archs; keeping the file's value"},
+		{"none", "", `{"digest":"sha256:aa","archs":null}`,
+			"", "api: the platform reported no archs; publish needs archs"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -259,43 +264,26 @@ func TestServicePublishStampsArchs(t *testing.T) {
 				}
 				io.WriteString(w, tc.resolved)
 			})
-			file := writeFixture(t, "leaf.json", definitionFixture)
-			if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1", "--var", "commit=abc"); err != nil {
+			file := writeFixture(t, "app.json", `{"services":[{"name":"app","definition":{"components":[
+				{"id":"api","variants":[{"type":"container","image":"repo:tag"`+tc.fileArchs+`}]}
+			]}}]}`)
+			out, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1")
+			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.want == "" {
-				if strings.Contains(publishBody, `"archs"`) {
-					t.Errorf("declaration %q, want no archs when the platform reported none", publishBody)
-				}
-				return
+			if tc.wantBody == "" && strings.Contains(publishBody, `"archs"`) {
+				t.Errorf("declaration %q, want no archs", publishBody)
 			}
-			if !strings.Contains(publishBody, tc.want) {
-				t.Errorf("declaration %q, want %s stamped beside the digest", publishBody, tc.want)
+			if tc.wantBody != "" && (!strings.Contains(publishBody, tc.wantBody) ||
+				strings.Count(publishBody, `"archs"`) != 1) {
+				t.Errorf("declaration %q, want exactly %s", publishBody, tc.wantBody)
+			}
+			if tc.wantLine == "" && strings.Contains(out, "reported no archs") {
+				t.Errorf("output %q, want no line about missing archs", out)
+			}
+			if tc.wantLine != "" && !strings.Contains(out, tc.wantLine+"\n") {
+				t.Errorf("output %q, want line %q", out, tc.wantLine)
 			}
 		})
-	}
-}
-
-// A variant pinned in the file is not resolved, so its archs are whatever the file says.
-func TestServicePublishKeepsArchsOfAPinnedImage(t *testing.T) {
-	var publishBody string
-	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/versions") {
-			t.Errorf("unexpected %s %s: a pinned image needs no resolve", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		b, _ := io.ReadAll(r.Body)
-		publishBody = string(b)
-		io.WriteString(w, `{"id":"ver-1","track":"v1","versionNumber":1}`)
-	})
-	file := writeFixture(t, "app.json", `{"services":[{"name":"app","definition":{"components":[
-		{"id":"api","variants":[{"type":"container","image":"repo:tag","digest":"sha256:bb","archs":["arm64"]}]}
-	]}}]}`)
-	if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(publishBody, `"archs":["arm64"]`) {
-		t.Errorf("declaration %q, want the file's archs passed through", publishBody)
 	}
 }

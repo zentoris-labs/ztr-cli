@@ -45,7 +45,10 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 			"into and no symlink followed.\n\n" +
 			"Container images are resolved to digests first, because publish itself is network-free and\n" +
 			"only validates that every image is pinned. The ${...} form stays in the image reference and\n" +
-			"the digest is stamped beside it, so both what was written and what it locked to are kept.\n\n" +
+			"the digest is stamped beside it, so both what was written and what it locked to are kept.\n" +
+			"The platform also reports the image's CPU archs, stamped as `archs`; publish is rejected\n" +
+			"without them. An `archs` set by hand on an unpinned variant is kept when the platform\n" +
+			"reports none.\n\n" +
 			"Publish one service per call. Several services are several calls, independent of each\n" +
 			"other, so one failing leaves the rest untouched.\n\n" +
 			"Authenticates with any configured credential source (see `zentoris auth status`).",
@@ -111,9 +114,14 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 					return fmt.Errorf("service %q component %q: %w", svc.Name, image.Component, err)
 				}
 				image.SetDigest(resolved.Digest)
-				// An older platform reports no archs; the variant then stays as the file wrote it.
-				if len(resolved.Archs) > 0 {
+				// No archs reported (older platform, or the registry did not say): keep the file's value.
+				switch {
+				case len(resolved.Archs) > 0:
 					image.SetArchs(resolved.Archs)
+				case image.HasArchs():
+					fmt.Fprintf(progress, "%s: the platform reported no archs; keeping the file's value\n", image.Component)
+				default:
+					fmt.Fprintf(progress, "%s: the platform reported no archs; publish needs archs\n", image.Component)
 				}
 				fmt.Fprintf(progress, "pinned %s -> %s\n", image.Image, resolved.Digest)
 			}

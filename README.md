@@ -206,8 +206,9 @@ committed file publishes to any deployment and the value that differs between de
 the pipeline's configuration instead of in the repository.
 
 A resolved variant also gets `archs`, the CPU architectures the image runs on (`amd64`, `arm64`),
-when the platform reports them. A variant already pinned in the file is not resolved: set its
-`archs` by hand.
+when the platform reports them. Publish is rejected without `archs`. A variant already pinned in
+the file is not resolved: set its `archs` by hand. An `archs` set by hand on an unpinned variant is
+kept when the platform reports none.
 
 Everything else in the definition is passed through exactly as written: an image variable is
 substituted by the platform at publish time, and a variable reference is resolved when a version is
