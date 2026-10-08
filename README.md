@@ -205,6 +205,10 @@ exist - publishing never creates one - and is named by **id** rather than by nam
 committed file publishes to any deployment and the value that differs between deployments lives in
 the pipeline's configuration instead of in the repository.
 
+A resolved variant also gets `archs`, the CPU architectures the image runs on (`amd64`, `arm64`),
+when the platform reports them. A variant already pinned in the file is not resolved: set its
+`archs` by hand.
+
 Everything else in the definition is passed through exactly as written: an image variable is
 substituted by the platform at publish time, and a variable reference is resolved when a version is
 deployed.
