@@ -233,3 +233,57 @@ func TestServicePublishDryRunReportsInlinedFiles(t *testing.T) {
 		}
 	}
 }
+
+// The platform reports which CPU architectures the resolved image runs on, and the CLI stamps them
+// beside the digest. A reported value replaces what the file wrote. When the platform reports none,
+// the file's value is kept and a progress line says so.
+func TestServicePublishStampsArchs(t *testing.T) {
+	cases := []struct {
+		name      string
+		fileArchs string
+		resolved  string
+		wantBody  string
+		wantLine  string
+	}{
+		{"reported wins", `,"archs":["arm64"]`, `{"digest":"sha256:aa","archs":["amd64","arm64"]}`,
+			`"archs":["amd64","arm64"]`, ""},
+		{"file kept", `,"archs":["arm64"]`, `{"digest":"sha256:aa","archs":null}`,
+			`"archs":["arm64"]`, "api: the platform reported no archs; keeping the file's value"},
+		{"none", "", `{"digest":"sha256:aa","archs":null}`,
+			"", "api: the platform reported no archs; publish needs archs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var publishBody string
+			d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				if strings.HasSuffix(r.URL.Path, "/versions") {
+					publishBody = string(b)
+					io.WriteString(w, `{"id":"ver-1","track":"v1","versionNumber":1}`)
+					return
+				}
+				io.WriteString(w, tc.resolved)
+			})
+			file := writeFixture(t, "app.json", `{"services":[{"name":"app","definition":{"components":[
+				{"id":"api","variants":[{"type":"container","image":"repo:tag"`+tc.fileArchs+`}]}
+			]}}]}`)
+			out, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantBody == "" && strings.Contains(publishBody, `"archs"`) {
+				t.Errorf("declaration %q, want no archs", publishBody)
+			}
+			if tc.wantBody != "" && (!strings.Contains(publishBody, tc.wantBody) ||
+				strings.Count(publishBody, `"archs"`) != 1) {
+				t.Errorf("declaration %q, want exactly %s", publishBody, tc.wantBody)
+			}
+			if tc.wantLine == "" && strings.Contains(out, "reported no archs") {
+				t.Errorf("output %q, want no line about missing archs", out)
+			}
+			if tc.wantLine != "" && !strings.Contains(out, tc.wantLine+"\n") {
+				t.Errorf("output %q, want line %q", out, tc.wantLine)
+			}
+		})
+	}
+}
