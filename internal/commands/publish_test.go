@@ -233,3 +233,69 @@ func TestServicePublishDryRunReportsInlinedFiles(t *testing.T) {
 		}
 	}
 }
+
+// The platform reports which CPU architectures the resolved image runs on. Publish needs them on
+// the variant, so the CLI stamps them beside the digest - and only when the platform said.
+func TestServicePublishStampsArchs(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolved string
+		want     string
+	}{
+		{"reported", `{"digest":"sha256:aa","archs":["amd64","arm64"]}`, `"archs":["amd64","arm64"]`},
+		{"unknown", `{"digest":"sha256:aa","archs":null}`, ""},
+		{"empty", `{"digest":"sha256:aa","archs":[]}`, ""},
+		{"older platform", `{"digest":"sha256:aa"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var publishBody string
+			d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				if strings.HasSuffix(r.URL.Path, "/versions") {
+					publishBody = string(b)
+					io.WriteString(w, `{"id":"ver-1","track":"v1","versionNumber":1}`)
+					return
+				}
+				io.WriteString(w, tc.resolved)
+			})
+			file := writeFixture(t, "leaf.json", definitionFixture)
+			if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1", "--var", "commit=abc"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if strings.Contains(publishBody, `"archs"`) {
+					t.Errorf("declaration %q, want no archs when the platform reported none", publishBody)
+				}
+				return
+			}
+			if !strings.Contains(publishBody, tc.want) {
+				t.Errorf("declaration %q, want %s stamped beside the digest", publishBody, tc.want)
+			}
+		})
+	}
+}
+
+// A variant pinned in the file is not resolved, so its archs are whatever the file says.
+func TestServicePublishKeepsArchsOfAPinnedImage(t *testing.T) {
+	var publishBody string
+	d, _ := apiDeps(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/versions") {
+			t.Errorf("unexpected %s %s: a pinned image needs no resolve", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		publishBody = string(b)
+		io.WriteString(w, `{"id":"ver-1","track":"v1","versionNumber":1}`)
+	})
+	file := writeFixture(t, "app.json", `{"services":[{"name":"app","definition":{"components":[
+		{"id":"api","variants":[{"type":"container","image":"repo:tag","digest":"sha256:bb","archs":["arm64"]}]}
+	]}}]}`)
+	if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(publishBody, `"archs":["arm64"]`) {
+		t.Errorf("declaration %q, want the file's archs passed through", publishBody)
+	}
+}

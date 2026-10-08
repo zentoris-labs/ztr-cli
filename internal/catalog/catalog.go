@@ -83,6 +83,9 @@ type ContainerVariant struct {
 // reference somebody wrote and the digest it locked to are both readable in the published version.
 func (v ContainerVariant) SetDigest(digest string) { v.node["digest"] = digest }
 
+// SetArchs records the CPU architectures the image runs on, as the platform reported them.
+func (v ContainerVariant) SetArchs(archs []string) { v.node["archs"] = archs }
+
 // Definition is a definition decoded for mutation.
 type Definition struct{ root map[string]any }
 

@@ -106,12 +106,16 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 				fmt.Fprintf(progress, "inlined %s from %s (%d files)\n", source.Component, source.Dir, len(source.Files))
 			}
 			for _, image := range definition.UnpinnedImages() {
-				digest, err := resolveImage(ctx, d, serviceID, image.Image, vars)
+				resolved, err := resolveImage(ctx, d, serviceID, image.Image, vars)
 				if err != nil {
 					return fmt.Errorf("service %q component %q: %w", svc.Name, image.Component, err)
 				}
-				image.SetDigest(digest)
-				fmt.Fprintf(progress, "pinned %s -> %s\n", image.Image, digest)
+				image.SetDigest(resolved.Digest)
+				// An older platform reports no archs; the variant then stays as the file wrote it.
+				if len(resolved.Archs) > 0 {
+					image.SetArchs(resolved.Archs)
+				}
+				fmt.Fprintf(progress, "pinned %s -> %s\n", image.Image, resolved.Digest)
 			}
 
 			body := map[string]any{"track": track, "declaration": definition.Body()}

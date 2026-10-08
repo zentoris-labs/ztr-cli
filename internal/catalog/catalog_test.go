@@ -102,3 +102,20 @@ func TestUnpinnedImagesSkipsWhatIsAlreadyPinned(t *testing.T) {
 		t.Fatalf("body %s, want the image reference left as written", body)
 	}
 }
+
+func TestSetArchsStampsBesideTheDigest(t *testing.T) {
+	d, err := Decode(json.RawMessage(`{"components":[{"id":"api","variants":[{"type":"container","image":"repo:tag"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := d.UnpinnedImages()
+	images[0].SetDigest("sha256:cc")
+	images[0].SetArchs([]string{"amd64", "arm64"})
+	body, err := json.Marshal(d.Body())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"archs":["amd64","arm64"]`) {
+		t.Fatalf("body %s, want the archs stamped on the variant", body)
+	}
+}
