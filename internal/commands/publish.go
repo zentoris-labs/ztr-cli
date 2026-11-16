@@ -68,11 +68,7 @@ func newServicePublishCmd(d *deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			parsed, err := catalog.Parse(raw)
-			if err != nil {
-				return err
-			}
-			svc, err := parsed.Single()
+			svc, err := catalog.Parse(raw)
 			if err != nil {
 				return err
 			}

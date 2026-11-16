@@ -2,12 +2,11 @@
 //
 // A definition file describes ONE service:
 //
-//	{ "services": [ { "name": "my-api", "definition": { "schemaVersion": 1, ... } } ] }
+//	{ "name": "my-api", "definition": { "schemaVersion": 1, ... } }
 //
-// The `services` array is a one-entry envelope rather than a list: a file publishes to one
-// service, named by id on the command line, so each service's definition can be read, reviewed
-// and published on its own. Any other top-level key is ignored, so a file that also carries
-// sections this command has no use for publishes without complaint.
+// A file publishes to one service, named by id on the command line, so each service's definition
+// can be read, reviewed and published on its own. Any other top-level key is ignored, so a file that
+// also carries fields this command has no use for (a description, say) publishes without complaint.
 //
 // Every ${...} form in a definition is left exactly as written. An image variable is substituted
 // by the platform at publish time and a variable reference is resolved at deploy time, so
@@ -16,59 +15,44 @@
 package catalog
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 )
 
-// Service is the file's one entry: a human-readable name for output, and the definition to publish
-// as a new immutable version. The name identifies nothing - the publish target is the service id
-// given on the command line - so renaming a service on the platform does not strand its file.
+// Service is a parsed definition file: a human-readable name for output, and the definition to
+// publish as a new immutable version. The name identifies nothing - the publish target is the
+// service id given on the command line - so renaming a service on the platform does not strand its
+// file.
 type Service struct {
 	Name       string          `json:"name"`
 	Definition json.RawMessage `json:"definition"`
 }
 
-// File is a parsed definition file.
-type File struct {
-	Services []Service `json:"services"`
-}
-
 // Parse reads a definition file and rejects the shapes that would fail later with a worse message.
-// It accepts the envelope as written and leaves "exactly one service" to Single, so a malformed
-// entry is reported as what it is rather than as a wrong count.
-func Parse(data []byte) (*File, error) {
-	var f File
+func Parse(data []byte) (Service, error) {
+	var f struct {
+		Service
+		// Read only to name the file shape v0.8.0 and earlier took, `{ "services": [ ... ] }`, instead of
+		// reporting it as a file with no name.
+		Services json.RawMessage `json:"services"`
+	}
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse definition file: %w", err)
+		return Service{}, fmt.Errorf("parse definition file: %w", err)
 	}
-	if len(f.Services) == 0 {
-		return nil, fmt.Errorf("file declares no services")
-	}
-	seen := make(map[string]bool, len(f.Services))
-	for i, s := range f.Services {
-		if strings.TrimSpace(s.Name) == "" {
-			return nil, fmt.Errorf("service #%d has no name", i+1)
+	s := f.Service
+	if strings.TrimSpace(s.Name) == "" {
+		if len(f.Services) > 0 {
+			return Service{}, fmt.Errorf("definition file uses the removed `services` envelope: " +
+				"move its one entry's name and definition to the top level")
 		}
-		if len(s.Definition) == 0 {
-			return nil, fmt.Errorf("service %q has no definition", s.Name)
-		}
-		if seen[s.Name] {
-			return nil, fmt.Errorf("service %q appears twice", s.Name)
-		}
-		seen[s.Name] = true
+		return Service{}, fmt.Errorf("definition file has no name")
 	}
-	return &f, nil
-}
-
-// Single returns the file's one service. A file describes exactly one, so anything else is a
-// mistake worth naming rather than a list to iterate: publishing takes one service id, and
-// silently using the first entry would publish the wrong definition onto it.
-func (f *File) Single() (Service, error) {
-	if len(f.Services) != 1 {
-		return Service{}, fmt.Errorf("a definition file describes one service, but this one has %d", len(f.Services))
+	if !bytes.HasPrefix(bytes.TrimSpace(s.Definition), []byte("{")) {
+		return Service{}, fmt.Errorf("service %q has no definition object", s.Name)
 	}
-	return f.Services[0], nil
+	return s, nil
 }
 
 // ContainerVariant is one container variant of a definition, exposed so the caller can resolve its

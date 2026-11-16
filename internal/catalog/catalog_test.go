@@ -7,23 +7,25 @@ import (
 )
 
 const oneService = `{
-  "systems": ["ignored"],
-  "services": [
-    {"name": "leaf", "definition": {"components": [
-      {"id": "api", "variants": [{"type": "container", "image": "ghcr.io/o/r:${commit}"}]}
-    ]}}
-  ]
+  "name": "leaf",
+  "description": "ignored",
+  "definition": {"components": [
+    {"id": "api", "variants": [{"type": "container", "image": "ghcr.io/o/r:${commit}"}]}
+  ]}
 }`
 
-func TestParseRejectsBadCatalogs(t *testing.T) {
+func TestParseRejectsBadFiles(t *testing.T) {
 	cases := []struct {
 		name, input, want string
 	}{
 		{"not json", `{`, "parse definition file"},
-		{"no services", `{"services": []}`, "no services"},
-		{"nameless", `{"services": [{"definition": {}}]}`, "has no name"},
-		{"definitionless", `{"services": [{"name": "a"}]}`, "has no definition"},
-		{"duplicate", `{"services": [{"name":"a","definition":{}},{"name":"a","definition":{}}]}`, "appears twice"},
+		{"not an object", `[]`, "parse definition file"},
+		{"nameless", `{"definition": {}}`, "has no name"},
+		{"definitionless", `{"name": "a"}`, "has no definition"},
+		{"null definition", `{"name": "a", "definition": null}`, "has no definition"},
+		{"array definition", `{"name": "a", "definition": []}`, "has no definition"},
+		{"string definition", `{"name": "a", "definition": "s"}`, "has no definition"},
+		{"old envelope", `{"services": [{"name": "a", "definition": {}}]}`, "removed `services` envelope"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,41 +37,16 @@ func TestParseRejectsBadCatalogs(t *testing.T) {
 	}
 }
 
-func TestParseIgnoresSectionsItHasNoUseFor(t *testing.T) {
-	f, err := Parse([]byte(oneService))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(f.Services) != 1 {
-		t.Fatalf("got %d services, want 1", len(f.Services))
-	}
-}
-
-func TestSingleReturnsTheOneService(t *testing.T) {
-	f, err := Parse([]byte(oneService))
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc, err := f.Single()
+func TestParseReturnsTheServiceAndIgnoresFieldsItHasNoUseFor(t *testing.T) {
+	svc, err := Parse([]byte(oneService))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if svc.Name != "leaf" {
-		t.Fatalf("Single = %q, want leaf", svc.Name)
+		t.Fatalf("Name = %q, want leaf", svc.Name)
 	}
-}
-
-// A file with two services must be refused rather than silently publishing the first onto the one
-// id the caller gave: that would put the wrong definition on a real service, with no error to read.
-func TestSingleRefusesMoreThanOneService(t *testing.T) {
-	f, err := Parse([]byte(`{"services":[
-		{"name":"a","definition":{"components":[]}},
-		{"name":"b","definition":{"components":[]}}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Single(); err == nil || !strings.Contains(err.Error(), "has 2") {
-		t.Fatalf("err = %v, want the count named", err)
+	if !strings.Contains(string(svc.Definition), `"components"`) {
+		t.Fatalf("Definition = %s, want the definition object", svc.Definition)
 	}
 }
 

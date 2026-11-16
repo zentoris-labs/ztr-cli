@@ -13,11 +13,10 @@ import (
 // definitionFixture is one service with one templated image, which is the whole shape publish
 // handles: read the file, resolve the image, POST the version.
 const definitionFixture = `{
-  "services": [
-    {"name": "leaf", "definition": {"components": [
-      {"id": "api", "variants": [{"type": "container", "image": "ghcr.io/o/leaf:${commit}"}]}
-    ]}}
-  ]
+  "name": "leaf",
+  "definition": {"components": [
+    {"id": "api", "variants": [{"type": "container", "image": "ghcr.io/o/leaf:${commit}"}]}
+  ]}
 }`
 
 func writeFixture(t *testing.T, name, content string) string {
@@ -108,9 +107,9 @@ func TestServicePublishLeavesPlaceholdersAlone(t *testing.T) {
 		}
 		io.WriteString(w, `{"digest":"sha256:aa"}`)
 	})
-	file := writeFixture(t, "app.json", `{"services":[{"name":"app","definition":{"components":[
+	file := writeFixture(t, "app.json", `{"name":"app","definition":{"components":[
 		{"id":"api","variants":[{"type":"container","image":"repo@sha256:bb","env":{"URL":"${auth_base_url}"}}]}
-	]}}]}`)
+	]}}`)
 	if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1"); err != nil {
 		t.Fatal(err)
 	}
@@ -138,9 +137,11 @@ func TestServicePublishDryRunWritesNothing(t *testing.T) {
 
 func TestServicePublishRejectsABadFile(t *testing.T) {
 	cases := map[string]struct{ content, want string }{
-		"empty":    {`{"services":[]}`, "no services"},
-		"two":      {`{"services":[{"name":"a","definition":{}},{"name":"b","definition":{}}]}`, "has 2"},
-		"not json": {`{`, "parse definition file"},
+		"nameless":       {`{"definition":{}}`, "has no name"},
+		"definitionless": {`{"name":"a"}`, "has no definition"},
+		"not json":       {`{`, "parse definition file"},
+		"not an object":  {`[]`, "parse definition file"},
+		"old envelope":   {`{"services":[{"name":"a","definition":{}}]}`, "removed `services` envelope"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -166,10 +167,10 @@ func TestServicePublishInlinesOpenTofuFilesFromDisk(t *testing.T) {
 
 	home := t.TempDir()
 	file := filepath.Join(home, "leaf.json")
-	if err := os.WriteFile(file, []byte(`{"services":[{"name":"leaf","definition":{"components":[
+	if err := os.WriteFile(file, []byte(`{"name":"leaf","definition":{"components":[
 	  {"id":"federation","variants":[{"type":"managed","tool":{"type":"opentofu",
 	    "source":{"type":"inline","dir":"federation"}}}]}
-	]}}]}`), 0o600); err != nil {
+	]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(home, "federation"), 0o755); err != nil {
@@ -206,10 +207,10 @@ func TestServicePublishDryRunReportsInlinedFiles(t *testing.T) {
 
 	home := t.TempDir()
 	file := filepath.Join(home, "leaf.json")
-	if err := os.WriteFile(file, []byte(`{"services":[{"name":"leaf","definition":{"components":[
+	if err := os.WriteFile(file, []byte(`{"name":"leaf","definition":{"components":[
 	  {"id":"federation","variants":[{"type":"managed","tool":{"type":"opentofu",
 	    "source":{"type":"inline","dir":"missing"}}}]}
-	]}}]}`), 0o600); err != nil {
+	]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1", "--dry-run"); err == nil ||
@@ -264,9 +265,9 @@ func TestServicePublishStampsArchs(t *testing.T) {
 				}
 				io.WriteString(w, tc.resolved)
 			})
-			file := writeFixture(t, "app.json", `{"services":[{"name":"app","definition":{"components":[
+			file := writeFixture(t, "app.json", `{"name":"app","definition":{"components":[
 				{"id":"api","variants":[{"type":"container","image":"repo:tag"`+tc.fileArchs+`}]}
-			]}}]}`)
+			]}}`)
 			out, err := run1(t, newServicePublishCmd(d), "-f", file, "--service-id", "svc_1")
 			if err != nil {
 				t.Fatal(err)

@@ -189,13 +189,12 @@ immutable version:
 
 ```jsonc
 {
-  "services": [
-    { "name": "my-api", "definition": { "schemaVersion": 1, "components": [
-      // ${commit} is filled by --var at publish time. The image is resolved to a digest first and
-      // the digest is stamped beside this reference, so both are readable in the published version.
-      { "id": "api", "variants": [{ "type": "container", "image": "ghcr.io/me/my-api:${commit}" }] }
-    ] } }
-  ]
+  "name": "my-api",
+  "definition": { "schemaVersion": 1, "components": [
+    // ${commit} is filled by --var at publish time. The image is resolved to a digest first and
+    // the digest is stamped beside this reference, so both are readable in the published version.
+    { "id": "api", "variants": [{ "type": "container", "image": "ghcr.io/me/my-api:${commit}" }] }
+  ] }
 }
 ```
 
